@@ -1,0 +1,107 @@
+ActivIdentity
+Adobe Acrobat Reader
+Adobe Connect
+Adobe Creative Cloud Desktop
+Anaconda
+Analog Devices
+Apple
+Aras Corporation
+Arduino
+Athena
+Atlassian
+Audacity
+AuriStor
+Avaya
+BeyondTrust
+Bit9
+Bitsum
+Blackberry
+Bomgar Corporation
+Bradford Networks
+Brain Technologies
+Bromium
+Carbon Black
+Centrify
+Certaid
+Cisco
+Code42 Software
+Core FTP
+Cytoscape
+DISA
+Docker
+KeePass
+Druva
+Dyslexie
+Eclipse Foundation
+ESM Software
+Essig PLM
+Fortinet
+Git for Windows
+GitHub Inc
+GlavSoft LLC
+GNU
+Google Chrome
+Guidance Software
+HCL Technologies Ltd
+7-Zip
+IrfanView
+JetBrains
+Juniper Networks
+Karakun AG
+KLayout
+Malwarebytes
+Mandiant-POC
+WinSCP
+Mathworks
+McAfee
+Mentor Graphics
+Microsoft Visual Studio Code
+Mozilla Firefox ESR
+Nero AG
+Newell Rubbermaid
+NoMachine
+Notepad++ Team
+NV Access
+NVidia
+Node.js
+OneStream Software LLC
+OpenAFS
+OpenText
+Oracle Java
+Palo Alto Networks
+PTC
+Pulse Secure
+Python
+R Core Team
+Savance
+ScooterSoftware
+Secure Endpoints
+SentinelOne
+PuTTY
+Slack
+Solidworks
+Splunk
+StarNet
+Synactive Inc
+Tableau
+TechSmith
+Tenable
+Tera Term Project
+The GIMP Team
+Thingamahoochie Software
+TigerVNC
+TortoiseGit
+TortoiseSVN Team
+VanDyke
+Veritas
+VideoLAN
+VMware
+Winmagic SecureDoc
+WinZip
+Wireshark Team
+XPLM
+Yasoon
+Yubico
+Zoom Workplace
+Zoom Rooms
+Zoom Outlook Plugin
