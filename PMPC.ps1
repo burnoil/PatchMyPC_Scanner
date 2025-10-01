@@ -366,6 +366,28 @@ $buttonLoadFile.Text = "Load from File..."
 $buttonLoadFile.BackColor = [System.Drawing.Color]::LightSkyBlue
 $form.Controls.Add($buttonLoadFile)
 
+$checkboxAutoRefresh = New-Object System.Windows.Forms.CheckBox
+$checkboxAutoRefresh.Location = New-Object System.Drawing.Point(140, 143)
+$checkboxAutoRefresh.Size = New-Object System.Drawing.Size(90, 20)
+$checkboxAutoRefresh.Text = "Auto-refresh:"
+$form.Controls.Add($checkboxAutoRefresh)
+
+$comboAutoRefreshInterval = New-Object System.Windows.Forms.ComboBox
+$comboAutoRefreshInterval.Location = New-Object System.Drawing.Point(230, 141)
+$comboAutoRefreshInterval.Size = New-Object System.Drawing.Size(90, 25)
+$comboAutoRefreshInterval.DropDownStyle = "DropDownList"
+$comboAutoRefreshInterval.Items.AddRange(@("1 hour", "2 hours", "4 hours"))
+$comboAutoRefreshInterval.SelectedIndex = 0
+$comboAutoRefreshInterval.Enabled = $false
+$form.Controls.Add($comboAutoRefreshInterval)
+
+$labelNextRefresh = New-Object System.Windows.Forms.Label
+$labelNextRefresh.Location = New-Object System.Drawing.Point(330, 143)
+$labelNextRefresh.Size = New-Object System.Drawing.Size(200, 20)
+$labelNextRefresh.Text = ""
+$labelNextRefresh.ForeColor = [System.Drawing.Color]::Gray
+$form.Controls.Add($labelNextRefresh)
+
 $labelDate = New-Object System.Windows.Forms.Label
 $labelDate.Location = New-Object System.Drawing.Point(430, 10)
 $labelDate.Size = New-Object System.Drawing.Size(150, 20)
@@ -1013,6 +1035,72 @@ $dataGridResults.Add_CellDoubleClick({
             $labelStatus.Text = "Copied to clipboard: $cellValue"
             $labelStatus.ForeColor = [System.Drawing.Color]::Green
         }
+    }
+})
+
+# Auto-refresh timer
+$autoRefreshTimer = New-Object System.Windows.Forms.Timer
+$script:nextRefreshTime = $null
+
+$autoRefreshTimer.Add_Tick({
+    $labelStatus.Text = "Auto-refresh triggered - checking for updates..."
+    $labelStatus.ForeColor = [System.Drawing.Color]::Blue
+    $form.Refresh()
+    
+    $buttonCheck.PerformClick()
+    
+    # Calculate next refresh time
+    $interval = switch ($comboAutoRefreshInterval.SelectedItem) {
+        "1 hour" { 1 }
+        "2 hours" { 2 }
+        "4 hours" { 4 }
+        default { 1 }
+    }
+    $script:nextRefreshTime = (Get-Date).AddHours($interval)
+    $labelNextRefresh.Text = "Next refresh: $($script:nextRefreshTime.ToString('HH:mm'))"
+})
+
+$checkboxAutoRefresh.Add_CheckedChanged({
+    if ($checkboxAutoRefresh.Checked) {
+        $comboAutoRefreshInterval.Enabled = $true
+        
+        $interval = switch ($comboAutoRefreshInterval.SelectedItem) {
+            "1 hour" { 3600000 }
+            "2 hours" { 7200000 }
+            "4 hours" { 14400000 }
+            default { 3600000 }
+        }
+        
+        $autoRefreshTimer.Interval = $interval
+        $autoRefreshTimer.Start()
+        
+        $script:nextRefreshTime = (Get-Date).AddMilliseconds($interval)
+        $labelNextRefresh.Text = "Next refresh: $($script:nextRefreshTime.ToString('HH:mm'))"
+        $labelNextRefresh.ForeColor = [System.Drawing.Color]::Green
+    } else {
+        $autoRefreshTimer.Stop()
+        $comboAutoRefreshInterval.Enabled = $false
+        $labelNextRefresh.Text = ""
+        $script:nextRefreshTime = $null
+    }
+})
+
+$comboAutoRefreshInterval.Add_SelectedIndexChanged({
+    if ($checkboxAutoRefresh.Checked) {
+        $autoRefreshTimer.Stop()
+        
+        $interval = switch ($comboAutoRefreshInterval.SelectedItem) {
+            "1 hour" { 3600000 }
+            "2 hours" { 7200000 }
+            "4 hours" { 14400000 }
+            default { 3600000 }
+        }
+        
+        $autoRefreshTimer.Interval = $interval
+        $autoRefreshTimer.Start()
+        
+        $script:nextRefreshTime = (Get-Date).AddMilliseconds($interval)
+        $labelNextRefresh.Text = "Next refresh: $($script:nextRefreshTime.ToString('HH:mm'))"
     }
 })
 
