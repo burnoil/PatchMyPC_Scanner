@@ -171,36 +171,75 @@ function Test-ShouldIncludeArchitecture {
 function Extract-UpdateDetails {
     param([string]$PageContent, [int]$MatchIndex, [int]$SearchRadius = 1500)
     
-    $startIndex = [Math]::Max(0, $MatchIndex - 300)
+    # Look backwards and forwards from match to find the update block
+    $startIndex = [Math]::Max(0, $MatchIndex - 500)
     $endIndex = [Math]::Min($PageContent.Length, $MatchIndex + $SearchRadius)
+    
+    # Get content after the match to find the end boundary
     $afterMatch = $PageContent.Substring($MatchIndex, $endIndex - $MatchIndex)
     
-    $boundaryPatterns = @('<(?:h[23]|div class="entry")', '\n\s*\n\s*\n', '(?:^|\n)[A-Z][a-zA-Z\s]+\d+\.\d+')
+    # More precise boundary patterns - look for the next software entry
+    $boundaryPatterns = @(
+        # Next software entry (capital letter followed by name and version)
+        '(?:\n|\r\n)\s*[A-Z][a-zA-Z\s&\.\+\-]{3,50}\s+\d+\.\d+',
+        # HTML heading or section break
+        '<h[23]',
+        # Entry wrapper div
+        '<div[^>]*class="entry',
+        # Multiple blank lines (3+)
+        '(?:\n|\r\n)\s*(?:\n|\r\n)\s*(?:\n|\r\n)'
+    )
+    
     $smallestBoundary = $afterMatch.Length
     
     foreach ($pattern in $boundaryPatterns) {
-        $match = [regex]::Match($afterMatch, $pattern, [System.Text.RegularExpressions.RegexOptions]::Multiline)
-        if ($match.Success -and $match.Index -lt $smallestBoundary -and $match.Index -gt 100) {
-            $smallestBoundary = $match.Index
+        $matches = [regex]::Matches($afterMatch, $pattern, [System.Text.RegularExpressions.RegexOptions]::Multiline)
+        # Skip the first match if it's too close (might be part of current entry)
+        foreach ($match in $matches) {
+            if ($match.Index -gt 150 -and $match.Index -lt $smallestBoundary) {
+                $smallestBoundary = $match.Index
+                break
+            }
         }
     }
     
-    if ($smallestBoundary -lt $afterMatch.Length) {
-        $endIndex = $MatchIndex + $smallestBoundary
-    }
+    # Calculate actual end position
+    $actualEndIndex = $MatchIndex + $smallestBoundary
     
-    $updateBlock = $PageContent.Substring($startIndex, $endIndex - $startIndex)
+    # Extract the update block
+    $updateBlock = $PageContent.Substring($startIndex, $actualEndIndex - $startIndex)
     
+    # Extract CVEs only from this block
     $cvePattern = 'CVE-\d{4}-\d{4,7}'
-    $cves = [regex]::Matches($updateBlock, $cvePattern) | ForEach-Object { $_.Value } | Select-Object -Unique | Sort-Object
+    $cves = [regex]::Matches($updateBlock, $cvePattern) | 
+            ForEach-Object { $_.Value } | 
+            Select-Object -Unique | 
+            Sort-Object
     
+    # Determine if security update - stricter criteria
     $isSecurityUpdate = $false
+    
+    # Primary indicator: CVEs present
     if ($cves.Count -gt 0) {
         $isSecurityUpdate = $true
     } else {
-        $securityPatterns = @('security\s+(?:update|release|fix|patch)', 'vulnerability|vulnerabilities', 'critical\s+update', 'security\s+advisory', 'CVE-IDs?:')
+        # Secondary indicators: explicit security keywords near the software name
+        # Only check within 300 chars of the match to be more precise
+        $nearContext = $PageContent.Substring(
+            [Math]::Max(0, $MatchIndex - 100),
+            [Math]::Min(400, $PageContent.Length - [Math]::Max(0, $MatchIndex - 100))
+        )
+        
+        $securityPatterns = @(
+            'security\s+(?:update|release|fix|patch)',
+            '\b(?:critical|important)\s+security',
+            'security\s+advisory',
+            'vulnerability\s+(?:fix|patch)',
+            'CVE-IDs?\s*:'
+        )
+        
         foreach ($pattern in $securityPatterns) {
-            if ($updateBlock -match $pattern) {
+            if ($nearContext -match $pattern) {
                 $isSecurityUpdate = $true
                 break
             }
@@ -262,6 +301,9 @@ function Get-PatchMyPCUpdates {
             $catalogUrl = $catalogInfo.Url
             $catalogDate = $catalogInfo.Date
             
+            # DEBUG: Show which dates we're scanning
+            Write-Host "DEBUG: Scanning catalog from $($catalogDate.ToString('yyyy-MM-dd'))"
+            
             try {
                 $pageContent = Get-CachedPage -Uri $catalogUrl -Headers $headers
                 
@@ -274,7 +316,7 @@ function Get-PatchMyPCUpdates {
                     foreach ($term in $searchTerms) {
                         $patterns = @(
                             "$([regex]::Escape($term))\s+((?:\d+\.)+\d+)\s*\(([^)]+)\)",
-                            "$([regex]::Escape($term))\s*[-–]\s*((?:\d+\.)+\d+)\s*\(([^)]+)\)"
+                            "$([regex]::Escape($term))\s*-\s*((?:\d+\.)+\d+)\s*\(([^)]+)\)"
                         )
                         
                         foreach ($pattern in $patterns) {
@@ -287,16 +329,19 @@ function Get-PatchMyPCUpdates {
                                 if ($version -notmatch '^(\d+\.)+\d+$') { continue }
                                 if (-not (Test-ShouldIncludeArchitecture -Architecture $architecture)) { continue }
                                 
-                                $uniqueKey = "$normalizedName-$version-$architecture"
-                                if ($processedUpdates.ContainsKey($uniqueKey)) { continue }
-                                
                                 $updateDetails = Extract-UpdateDetails -PageContent $pageContent -MatchIndex $match.Index
                                 $updateType = if ($updateDetails.IsSecurityUpdate) { "Security" } else { "Feature/Bug Fix" }
                                 
-                                if ($FilterType -eq "Security Only" -and $updateType -ne "Security") { continue }
-                                if ($FilterType -eq "Feature/Bug Fix Only" -and $updateType -ne "Feature/Bug Fix") { continue }
+                                # DEBUG: Log what we found for Visual Studio Code
+                                if ($software -like "*Visual Studio Code*" -and $version -eq "1.104.1") {
+                                    Write-Host "DEBUG: Found VS Code 1.104.1 on $($catalogDate.ToString('yyyy-MM-dd'))"
+                                    Write-Host "  Architecture: $architecture"
+                                    Write-Host "  UpdateType: $updateType"
+                                    Write-Host "  CVEs: $($updateDetails.CVEs -join ', ')"
+                                    Write-Host "  IsSecurityUpdate: $($updateDetails.IsSecurityUpdate)"
+                                }
                                 
-                                $processedUpdates.Add($uniqueKey, $true)
+                                
                                 
                                 $results += [PSCustomObject]@{
                                     Software = $software
@@ -324,6 +369,65 @@ function Get-PatchMyPCUpdates {
         $labelStatus.Text = "Completed checking $totalPages pages, found $($results.Count) updates"
         $labelStatus.ForeColor = [System.Drawing.Color]::Green
         $labelLastUpdated.Text = "Last checked: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+        
+        # Merge duplicate entries with same software, version, and architecture
+        if ($results.Count -gt 0) {
+            $mergedResults = @{}
+            
+            foreach ($result in $results) {
+                $mergeKey = "$($result.Software)-$($result.Version)-$($result.Architecture)"
+                
+                if ($mergedResults.ContainsKey($mergeKey)) {
+                    # Entry exists, merge attributes
+                    $existing = $mergedResults[$mergeKey]
+                    
+                    # Determine final UpdateType - Security wins
+                    $finalUpdateType = $existing.UpdateType
+                    if ($result.UpdateType -eq "Security") {
+                        $finalUpdateType = "Security"
+                    }
+                    if ($existing.UpdateType -eq "Security") {
+                        $finalUpdateType = "Security"
+                    }
+                    
+                    # Combine CVEs
+                    $existingCVEs = if ($existing.CVEs) { $existing.CVEs -split ',\s*' } else { @() }
+                    $newCVEs = if ($result.CVEs) { $result.CVEs -split ',\s*' } else { @() }
+                    $allCVEs = ($existingCVEs + $newCVEs) | Where-Object { $_ -and $_.Trim() } | Select-Object -Unique | Sort-Object
+                    $finalCVEs = if ($allCVEs.Count -gt 0) { ($allCVEs -join ", ") } else { "" }
+                    
+                    # Keep earliest publish date
+                    $finalPublished = $existing.Published
+                    if ($result.Published -lt $existing.Published) {
+                        $finalPublished = $result.Published
+                    }
+                    
+                    # Create new merged object
+                    $mergedResults[$mergeKey] = [PSCustomObject]@{
+                        Software = $existing.Software
+                        Version = $existing.Version
+                        UpdateType = $finalUpdateType
+                        Architecture = $existing.Architecture
+                        CVEs = $finalCVEs
+                        Published = $finalPublished
+                    }
+                } else {
+                    # New entry - add as-is
+                    $mergedResults[$mergeKey] = $result
+                }
+            }
+            
+            # Convert back to array
+            $results = @($mergedResults.Values)
+            
+            # NOW apply the filter after merging
+            if ($FilterType -eq "Security Only") {
+                $results = @($results | Where-Object { $_.UpdateType -eq "Security" })
+            } elseif ($FilterType -eq "Feature/Bug Fix Only") {
+                $results = @($results | Where-Object { $_.UpdateType -eq "Feature/Bug Fix" })
+            }
+        }
+        
     } catch {
         $labelStatus.Text = "Error: $($_.Exception.Message)"
         $labelStatus.ForeColor = [System.Drawing.Color]::Red
