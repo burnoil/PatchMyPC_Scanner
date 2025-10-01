@@ -1,11 +1,11 @@
 # Windows Security Update Checker GUI using PatchMyPC Feed
-# Enhanced version with file loading capability and improved accuracy
+# Version 2.1.0 - Enhanced with improved accuracy and reliability
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.IO
 
-# Centralized file paths
+# ===== FILE PATHS =====
 $appDataPath = Join-Path -Path $env:APPDATA -ChildPath "PMPC-Scanner"
 if (-not (Test-Path $appDataPath)) {
     try {
@@ -18,15 +18,333 @@ if (-not (Test-Path $appDataPath)) {
 $stateFilePath = Join-Path -Path $appDataPath -ChildPath "previous_scan_results.json"
 $acknowledgedFilePath = Join-Path -Path $appDataPath -ChildPath "acknowledged_items.json"
 
-# Create the main form
+# ===== CONFIGURATION =====
+$script:AppVersion = "2.1.0"
+$script:pageCache = @{}
+$script:cacheTimeout = 300
+
+# ===== HELPER FUNCTIONS =====
+
+function Invoke-WebRequestWithRetry {
+    param(
+        [string]$Uri,
+        [hashtable]$Headers,
+        [int]$MaxRetries = 3,
+        [int]$TimeoutSec = 30
+    )
+    
+    for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {
+        try {
+            $response = Invoke-WebRequest -Uri $Uri -Headers $Headers -UseBasicParsing -TimeoutSec $TimeoutSec -ErrorAction Stop
+            return $response
+        } catch {
+            $lastError = $_
+            if ($attempt -lt $MaxRetries) {
+                $waitTime = [Math]::Pow(2, $attempt)
+                Write-Warning "Attempt $attempt failed for $Uri. Retrying in $waitTime seconds..."
+                Start-Sleep -Seconds $waitTime
+            } else {
+                Write-Error "Failed to fetch $Uri after $MaxRetries attempts: $($_.Exception.Message)"
+                throw $lastError
+            }
+        }
+    }
+}
+
+function Get-CachedPage {
+    param([string]$Uri, [hashtable]$Headers)
+    
+    $cacheKey = $Uri
+    $now = Get-Date
+    
+    if ($script:pageCache.ContainsKey($cacheKey)) {
+        $cached = $script:pageCache[$cacheKey]
+        $age = ($now - $cached.Timestamp).TotalSeconds
+        if ($age -lt $script:cacheTimeout) {
+            return $cached.Content
+        } else {
+            $script:pageCache.Remove($cacheKey)
+        }
+    }
+    
+    $response = Invoke-WebRequestWithRetry -Uri $Uri -Headers $Headers
+    $script:pageCache[$cacheKey] = @{Content = $response.Content; Timestamp = $now}
+    return $response.Content
+}
+
+function Clear-PageCache {
+    $script:pageCache.Clear()
+}
+
+function Save-JsonSafely {
+    param([object]$Data, [string]$Path)
+    
+    try {
+        if ($null -eq $Data) { return $false }
+        $json = $Data | ConvertTo-Json -Depth 5 -ErrorAction Stop
+        if ([string]::IsNullOrWhiteSpace($json)) { return $false }
+        
+        $directory = Split-Path -Path $Path -Parent
+        if (-not (Test-Path $directory)) {
+            New-Item -Path $directory -ItemType Directory -Force | Out-Null
+        }
+        
+        $json | Out-File -FilePath $Path -Encoding UTF8 -ErrorAction Stop
+        return $true
+    } catch {
+        Write-Warning "Failed to save JSON to $Path : $($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Load-JsonSafely {
+    param([string]$Path)
+    
+    try {
+        if (-not (Test-Path $Path)) { return $null }
+        $content = Get-Content -Path $Path -Raw -ErrorAction Stop
+        if ([string]::IsNullOrWhiteSpace($content)) { return $null }
+        return ($content | ConvertFrom-Json -ErrorAction Stop)
+    } catch {
+        Write-Warning "Failed to load JSON from $Path : $($_.Exception.Message)"
+        return $null
+    }
+}
+
+function Get-NormalizedSoftwareName {
+    param([string]$Name)
+    
+    $normalizations = @{
+        'Microsoft Visual Studio Code' = 'Visual Studio Code'
+        'Visual Studio Code' = 'Visual Studio Code'
+        'Adobe Acrobat Reader DC' = 'Adobe Acrobat'
+        'Adobe Acrobat DC' = 'Adobe Acrobat'
+        'Adobe Reader' = 'Adobe Acrobat'
+        'Adobe Acrobat Reader' = 'Adobe Acrobat'
+        'Acrobat Reader' = 'Adobe Acrobat'
+        'Acrobat DC' = 'Adobe Acrobat'
+        'Adobe Acrobat Classic' = 'Adobe Acrobat'
+        'Git for Windows' = 'Git'
+        'Git' = 'Git'
+        '7-Zip' = '7-Zip'
+        '7Zip' = '7-Zip'
+    }
+    
+    if ($normalizations.ContainsKey($Name)) { return $normalizations[$Name] }
+    return $Name
+}
+
+function Get-SoftwareSearchTerms {
+    param([string]$Software)
+    
+    $searchTerms = @($Software)
+    switch ($Software) {
+        'Microsoft Visual Studio Code' { $searchTerms += 'Visual Studio Code' }
+        'Adobe Acrobat Reader' { 
+            $searchTerms += @('Adobe Acrobat Reader DC', 'Adobe Acrobat DC', 'Adobe Reader', 'Adobe Acrobat', 'Acrobat Reader', 'Acrobat DC', 'Adobe Acrobat Classic')
+        }
+        'Git for Windows' { $searchTerms += 'Git' }
+        '7-Zip' { $searchTerms += @('7Zip') }
+    }
+    return $searchTerms
+}
+
+function Test-ShouldIncludeArchitecture {
+    param([string]$Architecture)
+    
+    if ($Architecture -notmatch 'x64') { return $false }
+    
+    $excludeLanguages = @(
+        'de-DE', 'de', 'fr-FR', 'fr', 'es-ES', 'es-AR', 'es-MX', 'es-CL', 'es-CO', 'es', 
+        'it-IT', 'it', 'pt-PT', 'pt-BR', 'pt', 'nl-NL', 'nl', 'da-DK', 'da', 'sv-SE', 'sv',
+        'nb-NO', 'nb', 'fi-FI', 'fi', 'pl-PL', 'pl', 'cs-CZ', 'cs', 'hu-HU', 'hu', 'ru-RU', 'ru',
+        'ja-JP', 'ja', 'ko-KR', 'ko', 'zh-CN', 'zh-TW', 'zh', 'ar-SA', 'ar', 'he-IL', 'he',
+        'tr-TR', 'tr', 'el-GR', 'el', 'uk-UA', 'uk', 'MUI', 'ML', 'en-GB', 'en-CA', 'en-AU', 'en-NZ', 'en-IE'
+    )
+    
+    foreach ($lang in $excludeLanguages) {
+        if ($Architecture -match "\b$([regex]::Escape($lang))\b") { return $false }
+    }
+    return $true
+}
+
+function Extract-UpdateDetails {
+    param([string]$PageContent, [int]$MatchIndex, [int]$SearchRadius = 1500)
+    
+    $startIndex = [Math]::Max(0, $MatchIndex - 300)
+    $endIndex = [Math]::Min($PageContent.Length, $MatchIndex + $SearchRadius)
+    $afterMatch = $PageContent.Substring($MatchIndex, $endIndex - $MatchIndex)
+    
+    $boundaryPatterns = @('<(?:h[23]|div class="entry")', '\n\s*\n\s*\n', '(?:^|\n)[A-Z][a-zA-Z\s]+\d+\.\d+')
+    $smallestBoundary = $afterMatch.Length
+    
+    foreach ($pattern in $boundaryPatterns) {
+        $match = [regex]::Match($afterMatch, $pattern, [System.Text.RegularExpressions.RegexOptions]::Multiline)
+        if ($match.Success -and $match.Index -lt $smallestBoundary -and $match.Index -gt 100) {
+            $smallestBoundary = $match.Index
+        }
+    }
+    
+    if ($smallestBoundary -lt $afterMatch.Length) {
+        $endIndex = $MatchIndex + $smallestBoundary
+    }
+    
+    $updateBlock = $PageContent.Substring($startIndex, $endIndex - $startIndex)
+    
+    $cvePattern = 'CVE-\d{4}-\d{4,7}'
+    $cves = [regex]::Matches($updateBlock, $cvePattern) | ForEach-Object { $_.Value } | Select-Object -Unique | Sort-Object
+    
+    $isSecurityUpdate = $false
+    if ($cves.Count -gt 0) {
+        $isSecurityUpdate = $true
+    } else {
+        $securityPatterns = @('security\s+(?:update|release|fix|patch)', 'vulnerability|vulnerabilities', 'critical\s+update', 'security\s+advisory', 'CVE-IDs?:')
+        foreach ($pattern in $securityPatterns) {
+            if ($updateBlock -match $pattern) {
+                $isSecurityUpdate = $true
+                break
+            }
+        }
+    }
+    
+    return @{CVEs = $cves; IsSecurityUpdate = $isSecurityUpdate}
+}
+
+function Get-PatchMyPCUpdates {
+    param([string[]]$SoftwareList, [int]$DaysBack, [string]$FilterType = "All Updates")
+    
+    $results = @()
+    $cutoffDate = (Get-Date).AddDays(-$DaysBack)
+    $processedUpdates = @{}
+    
+    try {
+        $labelStatus.Text = "Downloading PatchMyPC catalog pages..."
+        $progressBar.Visible = $true
+        $progressBar.Value = 0
+        $form.Refresh()
+        
+        $headers = @{
+            'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            'Accept' = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+            'Accept-Language' = 'en-US,en;q=0.9'
+        }
+        
+        $mainPageContent = Get-CachedPage -Uri "https://patchmypc.com/category/catalog-updates/" -Headers $headers
+        $catalogUrls = [regex]::Matches($mainPageContent, 'href="(https://patchmypc\.com/catalog-release/\d{4}/\d{2}-\d{2}-\d{2}/)"') | 
+                       ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique | Select-Object -First 15
+        
+        if ($catalogUrls.Count -eq 0) { throw "No catalog URLs found on main page" }
+        
+        $validCatalogUrls = @()
+        foreach ($url in $catalogUrls) {
+            if ($url -match '/(\d{4})/(\d{2})-(\d{2})-(\d{2})/') {
+                try {
+                    $catalogDate = Get-Date -Year ([int]$matches[1]) -Month ([int]$matches[2]) -Day ([int]$matches[3])
+                    if ($catalogDate -ge $cutoffDate) {
+                        $validCatalogUrls += @{Url = $url; Date = $catalogDate}
+                    }
+                } catch {
+                    Write-Warning "Invalid date in URL: $url"
+                }
+            }
+        }
+        
+        $totalPages = $validCatalogUrls.Count
+        $progressBar.Maximum = $totalPages
+        $processedPages = 0
+        
+        foreach ($catalogInfo in $validCatalogUrls) {
+            $processedPages++
+            $progressBar.Value = $processedPages
+            $labelStatus.Text = "Checking catalog page $processedPages of $totalPages..."
+            $form.Refresh()
+            
+            $catalogUrl = $catalogInfo.Url
+            $catalogDate = $catalogInfo.Date
+            
+            try {
+                $pageContent = Get-CachedPage -Uri $catalogUrl -Headers $headers
+                
+                foreach ($software in $SoftwareList) {
+                    if ([string]::IsNullOrWhiteSpace($software)) { continue }
+                    
+                    $searchTerms = Get-SoftwareSearchTerms -Software $software
+                    $normalizedName = Get-NormalizedSoftwareName -Name $software
+                    
+                    foreach ($term in $searchTerms) {
+                        $patterns = @(
+                            "$([regex]::Escape($term))\s+((?:\d+\.)+\d+)\s*\(([^)]+)\)",
+                            "$([regex]::Escape($term))\s*[-–]\s*((?:\d+\.)+\d+)\s*\(([^)]+)\)"
+                        )
+                        
+                        foreach ($pattern in $patterns) {
+                            $matches = [regex]::Matches($pageContent, $pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+                            
+                            foreach ($match in $matches) {
+                                $version = $match.Groups[1].Value.Trim()
+                                $architecture = $match.Groups[2].Value.Trim()
+                                
+                                if ($version -notmatch '^(\d+\.)+\d+$') { continue }
+                                if (-not (Test-ShouldIncludeArchitecture -Architecture $architecture)) { continue }
+                                
+                                $uniqueKey = "$normalizedName-$version-$architecture"
+                                if ($processedUpdates.ContainsKey($uniqueKey)) { continue }
+                                
+                                $updateDetails = Extract-UpdateDetails -PageContent $pageContent -MatchIndex $match.Index
+                                $updateType = if ($updateDetails.IsSecurityUpdate) { "Security" } else { "Feature/Bug Fix" }
+                                
+                                if ($FilterType -eq "Security Only" -and $updateType -ne "Security") { continue }
+                                if ($FilterType -eq "Feature/Bug Fix Only" -and $updateType -ne "Feature/Bug Fix") { continue }
+                                
+                                $processedUpdates.Add($uniqueKey, $true)
+                                
+                                $results += [PSCustomObject]@{
+                                    Software = $software
+                                    Version = $version
+                                    UpdateType = $updateType
+                                    Architecture = $architecture
+                                    CVEs = ($updateDetails.CVEs -join ", ")
+                                    Published = $catalogDate.ToString("yyyy-MM-dd")
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                Start-Sleep -Milliseconds 250
+            } catch {
+                Write-Warning "Error processing $catalogUrl : $($_.Exception.Message)"
+                $labelStatus.Text = "Warning: Error on page $processedPages, continuing..."
+                $labelStatus.ForeColor = [System.Drawing.Color]::Orange
+                $form.Refresh()
+                Start-Sleep -Milliseconds 500
+            }
+        }
+        
+        $labelStatus.Text = "Completed checking $totalPages pages, found $($results.Count) updates"
+        $labelStatus.ForeColor = [System.Drawing.Color]::Green
+        $labelLastUpdated.Text = "Last checked: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+    } catch {
+        $labelStatus.Text = "Error: $($_.Exception.Message)"
+        $labelStatus.ForeColor = [System.Drawing.Color]::Red
+        Write-Error "Fatal error in Get-PatchMyPCUpdates: $_"
+    } finally {
+        $progressBar.Visible = $false
+        $form.Refresh()
+    }
+    
+    return $results
+}
+
+# ===== CREATE GUI =====
+
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "Windows Security Update Checker (PatchMyPC)"
+$form.Text = "Windows Security Update Checker (PatchMyPC) - v$script:AppVersion"
 $form.Size = New-Object System.Drawing.Size(1200, 800)
 $form.StartPosition = "CenterScreen"
 $form.MaximizeBox = $true
 $form.MinimumSize = New-Object System.Drawing.Size(1000, 600)
 
-# Software list input
 $labelSoftware = New-Object System.Windows.Forms.Label
 $labelSoftware.Location = New-Object System.Drawing.Point(10, 10)
 $labelSoftware.Size = New-Object System.Drawing.Size(200, 20)
@@ -41,7 +359,6 @@ $textboxSoftware.ScrollBars = "Vertical"
 $textboxSoftware.Text = "Google Chrome`nMozilla Firefox ESR`n7-Zip`nNotepad++`nMicrosoft Visual Studio Code`nGit for Windows`nOracle Java`nPython`nNode.js`nWinSCP"
 $form.Controls.Add($textboxSoftware)
 
-# Load from file button
 $buttonLoadFile = New-Object System.Windows.Forms.Button
 $buttonLoadFile.Location = New-Object System.Drawing.Point(10, 140)
 $buttonLoadFile.Size = New-Object System.Drawing.Size(120, 25)
@@ -49,7 +366,6 @@ $buttonLoadFile.Text = "Load from File..."
 $buttonLoadFile.BackColor = [System.Drawing.Color]::LightSkyBlue
 $form.Controls.Add($buttonLoadFile)
 
-# Date selection section
 $labelDate = New-Object System.Windows.Forms.Label
 $labelDate.Location = New-Object System.Drawing.Point(430, 10)
 $labelDate.Size = New-Object System.Drawing.Size(150, 20)
@@ -71,7 +387,6 @@ $labelDaysHelp.Text = "days (1-365)"
 $labelDaysHelp.ForeColor = [System.Drawing.Color]::Gray
 $form.Controls.Add($labelDaysHelp)
 
-# Filter section
 $labelFilter = New-Object System.Windows.Forms.Label
 $labelFilter.Location = New-Object System.Drawing.Point(430, 65)
 $labelFilter.Size = New-Object System.Drawing.Size(100, 20)
@@ -86,7 +401,6 @@ $comboFilter.Items.AddRange(@("All Updates", "Security Only", "Feature/Bug Fix O
 $comboFilter.SelectedIndex = 0
 $form.Controls.Add($comboFilter)
 
-# Create all buttons
 $buttonCheck = New-Object System.Windows.Forms.Button
 $buttonCheck.Location = New-Object System.Drawing.Point(680, 35)
 $buttonCheck.Size = New-Object System.Drawing.Size(120, 30)
@@ -153,7 +467,6 @@ $buttonHelp.BackColor = [System.Drawing.Color]::AliceBlue
 $buttonHelp.Anchor = "Top,Left"
 $form.Controls.Add($buttonHelp)
 
-# Progress bar
 $progressBar = New-Object System.Windows.Forms.ProgressBar
 $progressBar.Location = New-Object System.Drawing.Point(10, 175)
 $progressBar.Size = New-Object System.Drawing.Size(1160, 20)
@@ -162,7 +475,6 @@ $progressBar.Visible = $false
 $progressBar.Anchor = "Top,Left,Right"
 $form.Controls.Add($progressBar)
 
-# Status label
 $labelStatus = New-Object System.Windows.Forms.Label
 $labelStatus.Location = New-Object System.Drawing.Point(10, 200)
 $labelStatus.Size = New-Object System.Drawing.Size(1160, 20)
@@ -171,7 +483,6 @@ $labelStatus.ForeColor = [System.Drawing.Color]::Blue
 $labelStatus.Anchor = "Top,Left,Right"
 $form.Controls.Add($labelStatus)
 
-# Results display with DataGridView
 $labelResults = New-Object System.Windows.Forms.Label
 $labelResults.Location = New-Object System.Drawing.Point(10, 225)
 $labelResults.Size = New-Object System.Drawing.Size(400, 20)
@@ -179,9 +490,31 @@ $labelResults.Text = "Windows Updates from PatchMyPC:"
 $labelResults.Anchor = "Top,Left"
 $form.Controls.Add($labelResults)
 
+$labelStats = New-Object System.Windows.Forms.Label
+$labelStats.Location = New-Object System.Drawing.Point(420, 225)
+$labelStats.Size = New-Object System.Drawing.Size(500, 20)
+$labelStats.Text = ""
+$labelStats.ForeColor = [System.Drawing.Color]::DarkBlue
+$labelStats.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+$labelStats.Anchor = "Top,Left"
+$form.Controls.Add($labelStats)
+
+$labelSearch = New-Object System.Windows.Forms.Label
+$labelSearch.Location = New-Object System.Drawing.Point(940, 225)
+$labelSearch.Size = New-Object System.Drawing.Size(50, 20)
+$labelSearch.Text = "Filter:"
+$labelSearch.Anchor = "Top,Right"
+$form.Controls.Add($labelSearch)
+
+$textboxSearch = New-Object System.Windows.Forms.TextBox
+$textboxSearch.Location = New-Object System.Drawing.Point(990, 222)
+$textboxSearch.Size = New-Object System.Drawing.Size(180, 20)
+$textboxSearch.Anchor = "Top,Right"
+$form.Controls.Add($textboxSearch)
+
 $dataGridResults = New-Object System.Windows.Forms.DataGridView
 $dataGridResults.Location = New-Object System.Drawing.Point(10, 250)
-$dataGridResults.Size = New-Object System.Drawing.Size(1160, 455) 
+$dataGridResults.Size = New-Object System.Drawing.Size(1160, 455)
 $dataGridResults.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 $dataGridResults.AllowUserToAddRows = $false
 $dataGridResults.AllowUserToDeleteRows = $false
@@ -191,53 +524,62 @@ $dataGridResults.SelectionMode = "FullRowSelect"
 $dataGridResults.MultiSelect = $true
 $dataGridResults.RowHeadersVisible = $false
 $dataGridResults.Anchor = "Top,Bottom,Left,Right"
+$dataGridResults.AllowUserToOrderColumns = $true
+$dataGridResults.ColumnHeadersDefaultCellStyle.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+$dataGridResults.EnableHeadersVisualStyles = $false
+$dataGridResults.ColumnHeadersDefaultCellStyle.BackColor = [System.Drawing.Color]::LightGray
 
-# Add columns
 $colSoftware = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
 $colSoftware.Name = "Software"
 $colSoftware.HeaderText = "Software"
 $colSoftware.FillWeight = 20
+$colSoftware.SortMode = "Automatic"
 $dataGridResults.Columns.Add($colSoftware)
 
 $colVersion = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
 $colVersion.Name = "Version"
 $colVersion.HeaderText = "Version"
 $colVersion.FillWeight = 12
+$colVersion.SortMode = "Automatic"
 $dataGridResults.Columns.Add($colVersion)
 
 $colType = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
 $colType.Name = "UpdateType"
 $colType.HeaderText = "Update Type"
 $colType.FillWeight = 10
+$colType.SortMode = "Automatic"
 $dataGridResults.Columns.Add($colType)
 
 $colArchitecture = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
 $colArchitecture.Name = "Architecture"
 $colArchitecture.HeaderText = "Architecture"
 $colArchitecture.FillWeight = 8
+$colArchitecture.SortMode = "Automatic"
 $dataGridResults.Columns.Add($colArchitecture)
 
 $colCVEs = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
 $colCVEs.Name = "CVEs"
 $colCVEs.HeaderText = "CVE IDs"
 $colCVEs.FillWeight = 15
+$colCVEs.SortMode = "Automatic"
 $dataGridResults.Columns.Add($colCVEs)
 
 $colPublished = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
 $colPublished.Name = "Published"
 $colPublished.HeaderText = "Published"
 $colPublished.FillWeight = 10
+$colPublished.SortMode = "Automatic"
 $dataGridResults.Columns.Add($colPublished)
 
 $colStatus = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
 $colStatus.Name = "Status"
 $colStatus.HeaderText = "Status"
 $colStatus.FillWeight = 8
+$colStatus.SortMode = "Automatic"
 $dataGridResults.Columns.Add($colStatus)
 
 $form.Controls.Add($dataGridResults)
 
-# Last updated label
 $labelLastUpdated = New-Object System.Windows.Forms.Label
 $labelLastUpdated.Location = New-Object System.Drawing.Point(10, 715)
 $labelLastUpdated.Size = New-Object System.Drawing.Size(400, 20)
@@ -262,7 +604,6 @@ $labelAcknowledged.ForeColor = [System.Drawing.Color]::Gray
 $labelAcknowledged.Anchor = "Bottom,Left"
 $form.Controls.Add($labelAcknowledged)
 
-# Legend for status colors
 $labelLegend = New-Object System.Windows.Forms.Label
 $labelLegend.Location = New-Object System.Drawing.Point(420, 735)
 $labelLegend.Size = New-Object System.Drawing.Size(600, 20)
@@ -271,217 +612,8 @@ $labelLegend.ForeColor = [System.Drawing.Color]::Gray
 $labelLegend.Anchor = "Bottom,Left"
 $form.Controls.Add($labelLegend)
 
-# Function to parse PatchMyPC catalog pages
-function Get-PatchMyPCUpdates {
-    param(
-        [string[]]$SoftwareList,
-        [int]$DaysBack,
-        [string]$FilterType = "All Updates"
-    )
-    
-    $results = @()
-    $cutoffDate = (Get-Date).AddDays(-$DaysBack)
-    $processedUpdates = @{}
-    
-    try {
-        $labelStatus.Text = "Downloading recent PatchMyPC catalog pages..."
-        $progressBar.Visible = $true
-        $progressBar.Value = 0
-        $form.Refresh()
-        
-        $headers = @{
-            'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            'Accept' = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-            'Accept-Language' = 'en-US,en;q=0.9'
-        }
-        
-        $mainPage = Invoke-WebRequest -Uri "https://patchmypc.com/category/catalog-updates/" -TimeoutSec 30 -Headers $headers -UseBasicParsing -ErrorAction Stop
-        
-        $catalogUrls = [regex]::Matches($mainPage.Content, 'href="(https://patchmypc\.com/catalog-release/\d{4}/\d{2}-\d{2}-\d{2}/)"') | 
-                       ForEach-Object { $_.Groups[1].Value } | 
-                       Select-Object -Unique |
-                       Select-Object -First 15
-        
-        $processedPages = 0
-        $totalPages = $catalogUrls.Count
-        $progressBar.Maximum = $totalPages
-        
-        foreach ($catalogUrl in $catalogUrls) {
-            $processedPages++
-            $progressBar.Value = $processedPages
-            $labelStatus.Text = "Checking catalog page $processedPages of $totalPages..."
-            $form.Refresh()
-            
-            try {
-                if ($catalogUrl -match '/(\d{4})/(\d{2})-(\d{2})-(\d{2})/') {
-                    $year = [int]$matches[1]
-                    $month = [int]$matches[2]
-                    $day = [int]$matches[3]
-                    $catalogDate = Get-Date -Year $year -Month $month -Day $day
-                    
-                    if ($catalogDate -lt $cutoffDate) {
-                        continue
-                    }
-                }
-                
-                $catalogPage = Invoke-WebRequest -Uri $catalogUrl -TimeoutSec 30 -Headers $headers -UseBasicParsing -ErrorAction Stop
-                $pageContent = $catalogPage.Content
-                
-                foreach ($software in $SoftwareList) {
-                    if ([string]::IsNullOrWhiteSpace($software)) { 
-                        continue 
-                    }
-                    
-                    $searchTerms = @($software)
-                    if ($software -eq "Microsoft Visual Studio Code") {
-                        $searchTerms += @("Visual Studio Code")
-                    } elseif ($software -eq "Adobe Acrobat Reader") {
-                        $searchTerms += @("Adobe Acrobat Reader DC", "Adobe Acrobat DC", "Adobe Reader", "Adobe Acrobat", "Acrobat Reader", "Acrobat DC", "Adobe Acrobat Classic")
-                    } elseif ($software -eq "Git for Windows") {
-                        $searchTerms += @("Git")
-                    } elseif ($software -eq "7-Zip") {
-                        $searchTerms += @("7Zip", "7-zip")
-                    }
-                    
-                    foreach ($term in $searchTerms) {
-                        $pattern = [regex]::Escape($term) + '\s+([\d\.]+)\s*\(([^\)]+)\)'
-                        $matches = [regex]::Matches($pageContent, $pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-                        
-                        foreach ($match in $matches) {
-                            $version = $match.Groups[1].Value
-                            $architecture = if ($match.Groups.Count -gt 2) { $match.Groups[2].Value } else { "Unknown" }
-                            
-                            # Only process x64 architectures and filter out non-English language codes
-                            if ($architecture -notmatch 'x64') {
-                                continue
-                            }
-                            
-                            # Skip non-English language versions
-                            # Filter out all language-specific versions including English variants
-                            # Only keep entries without language codes or generic x64
-                            $languageCodes = @(
-                                # Non-English languages
-                                'de-DE', 'fr-FR', 'es-ES', 'es-AR', 'es-MX', 'es-CL', 'es-CO', 
-                                'it-IT', 'pt-PT', 'pt-BR', 'nl-NL', 'da-DK', 'sv-SE', 'nb-NO', 
-                                'fi-FI', 'pl-PL', 'cs-CZ', 'hu-HU', 'ru-RU', 'ja-JP', 'ko-KR', 
-                                'zh-CN', 'zh-TW', 'ar-SA', 'he-IL', 'tr-TR', 'el-GR', 'uk-UA',
-                                'de', 'fr', 'es', 'it', 'pt', 'nl', 'da', 'sv', 'nb',
-                                'fi', 'pl', 'cs', 'hu', 'ru', 'ja', 'ko', 'zh', 'ar',
-                                'he', 'tr', 'el', 'uk', 'MUI', 'ML',
-                                # English variants (if you want to filter these out too)
-                                'en-US', 'en-GB', 'en-CA', 'en-AU', 'en-NZ', 'en-IE'
-                            )
-                            
-                            $hasLanguageCode = $false
-                            foreach ($lang in $languageCodes) {
-                                # Match language codes as whole words at word boundaries or end of string
-                                if ($architecture -match "(\s|^)$([regex]::Escape($lang))(\s|$)") {
-                                    $hasLanguageCode = $true
-                                    break
-                                }
-                            }
-                            
-                            if ($hasLanguageCode) {
-                                continue
-                            }
-                            
-                            $uniqueKey = "$($software)-$($version)-$($architecture)"
-                            if ($processedUpdates.ContainsKey($uniqueKey)) {
-                                continue
-                            }
-                            
-                            $cveIds = @()
-                            # Expand context window significantly to capture CVE-IDs section
-                            $contextStartIndex = [Math]::Max(0, $match.Index - 500)
-                            $contextLength = [Math]::Min($pageContent.Length - $contextStartIndex, 2000) 
-                            $searchContext = $pageContent.Substring($contextStartIndex, $contextLength)
-                            
-                            # Look for CVE-IDs: section first (most reliable)
-                            if ($searchContext -match 'CVE-IDs:\s*([^<\n]+)') {
-                                $cveSection = $matches[1]
-                                $cvePattern = 'CVE-\d{4}-\d{4,7}'
-                                $cveMatches = [regex]::Matches($cveSection, $cvePattern)
-                                if ($cveMatches.Count -gt 0) {
-                                    $cveIds = $cveMatches | ForEach-Object { $_.Value } | Select-Object -Unique
-                                }
-                            }
-                            
-                            # Fallback: search for any CVE references in context
-                            if ($cveIds.Count -eq 0) {
-                                $cvePattern = 'CVE-\d{4}-\d{4,7}'
-                                $cveMatches = [regex]::Matches($searchContext, $cvePattern)
-                                if ($cveMatches.Count -gt 0) {
-                                    $cveIds = $cveMatches | ForEach-Object { $_.Value } | Select-Object -Unique
-                                }
-                            }
-                            
-                            # Enhanced security detection
-                            $updateType = "Feature/Bug Fix"
-                            $securityKeywords = @(
-                                'Security (Update|Release|Fix|Patch)',
-                                'Vulnerability',
-                                'Critical Update',
-                                'Security Advisory'
-                            )
-                            
-                            $isSecurityUpdate = $false
-                            if ($cveMatches.Count -gt 0) {
-                                $isSecurityUpdate = $true
-                            } else {
-                                foreach ($keyword in $securityKeywords) {
-                                    if ($searchContext -match $keyword) {
-                                        $isSecurityUpdate = $true
-                                        break
-                                    }
-                                }
-                            }
-                            
-                            if ($isSecurityUpdate) {
-                                $updateType = "Security"
-                            }
-                            
-                            if ($FilterType -eq "Security Only" -and $updateType -ne "Security") {
-                                continue
-                            }
-                            if ($FilterType -eq "Feature/Bug Fix Only" -and $updateType -ne "Feature/Bug Fix") {
-                                continue
-                            }
-                            
-                            $processedUpdates.Add($uniqueKey, $true)
-                            $results += [PSCustomObject]@{
-                                Software = $software
-                                Version = $version
-                                UpdateType = $updateType
-                                Architecture = $architecture
-                                CVEs = ($cveIds -join ", ")
-                                Published = $catalogDate.ToString("yyyy-MM-dd")
-                            }
-                        }
-                    }
-                }
-            } catch {
-                $labelStatus.Text = "Error checking page: $($_.Exception.Message)"
-                $labelStatus.ForeColor = [System.Drawing.Color]::Red
-                $form.Refresh()
-                Start-Sleep -Milliseconds 500
-            }
-        }
-        
-        $labelStatus.Text = "Completed checking $processedPages pages, found $($results.Count) updates"
-        $labelStatus.ForeColor = [System.Drawing.Color]::Green
-        $labelLastUpdated.Text = "Last checked: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
-    } catch {
-        $labelStatus.Text = "Error downloading catalog: $($_.Exception.Message)"
-        $labelStatus.ForeColor = [System.Drawing.Color]::Red
-    } finally {
-        $progressBar.Visible = $false
-        $form.Refresh()
-    }
-        
-    return $results
-}
+# ===== EVENT HANDLERS =====
 
-# Load from file button handler
 $buttonLoadFile.Add_Click({
     $openFileDialog = New-Object System.Windows.Forms.OpenFileDialog
     $openFileDialog.Filter = "Text Files (*.txt)|*.txt|All Files (*.*)|*.*"
@@ -497,47 +629,36 @@ $buttonLoadFile.Add_Click({
         } catch {
             $labelStatus.Text = "Error loading file: $($_.Exception.Message)"
             $labelStatus.ForeColor = [System.Drawing.Color]::Red
-            [System.Windows.Forms.MessageBox]::Show("Could not load the file. Please ensure it's a valid text file.`n`nError: $($_.Exception.Message)", "File Load Error", "OK", "Error")
+            [System.Windows.Forms.MessageBox]::Show("Could not load the file.`n`nError: $($_.Exception.Message)", "File Load Error", "OK", "Error")
         }
         $form.Refresh()
     }
 })
 
-# Button event handlers
 $buttonCheck.Add_Click({
     $dataGridResults.Rows.Clear()
     $buttonExport.Enabled = $false
     $buttonAcknowledge.Enabled = $false
     $labelStatus.Text = "Starting update check..."
+    $labelStats.Text = ""
     $form.Refresh()
 
-    # Load acknowledged items
     $acknowledgedItems = @{}
-    if (Test-Path $acknowledgedFilePath) {
-        try {
-            $ackData = Get-Content -Path $acknowledgedFilePath -Raw | ConvertFrom-Json
-            foreach ($item in $ackData) {
-                $key = "$($item.Software)-$($item.Version)-$($item.Architecture)"
-                $acknowledgedItems[$key] = $item.AcknowledgedDate
-            }
-        } catch {
-            $labelStatus.Text = "Warning: Could not read acknowledged items. $($_.Exception.Message)"
+    $ackData = Load-JsonSafely -Path $acknowledgedFilePath
+    if ($null -ne $ackData) {
+        foreach ($item in $ackData) {
+            $key = "$($item.Software)-$($item.Version)-$($item.Architecture)"
+            $acknowledgedItems[$key] = $item.AcknowledgedDate
         }
     }
     $labelAcknowledged.Text = "Acknowledged items: $($acknowledgedItems.Count)"
 
     $historyExists = $false
-    $previousResults = @()
-    if (Test-Path $stateFilePath) {
-        try {
-            $previousResults = Get-Content -Path $stateFilePath -Raw | ConvertFrom-Json
-            $historyDate = (Get-Item $stateFilePath).LastWriteTime
-            $labelHistoryDate.Text = "Previous scan history from: $($historyDate.ToString('yyyy-MM-dd HH:mm:ss'))"
-            $historyExists = $true
-        } catch {
-            $labelStatus.Text = "Warning: Could not read history file. $($_.Exception.Message)"
-            $labelHistoryDate.Text = "Previous scan history: Error reading file"
-        }
+    $previousResults = Load-JsonSafely -Path $stateFilePath
+    if ($null -ne $previousResults) {
+        $historyDate = (Get-Item $stateFilePath).LastWriteTime
+        $labelHistoryDate.Text = "Previous scan history from: $($historyDate.ToString('yyyy-MM-dd HH:mm:ss'))"
+        $historyExists = $true
     } else {
         $labelHistoryDate.Text = "Previous scan history: Not found"
     }
@@ -568,6 +689,7 @@ $buttonCheck.Add_Click({
     if ($results.Count -eq 0) {
         $labelStatus.Text = "No updates found matching criteria."
         $labelStatus.ForeColor = [System.Drawing.Color]::Orange
+        $labelStats.Text = ""
     } else {
         $newCount = 0
         $acknowledgedCount = 0
@@ -576,7 +698,6 @@ $buttonCheck.Add_Click({
             try {
                 $currentKey = "$($result.Software)-$($result.Version)-$($result.Architecture)"
                 
-                # Determine status
                 $status = "Previously Seen"
                 $rowColor = [System.Drawing.Color]::White
                 
@@ -590,37 +711,31 @@ $buttonCheck.Add_Click({
                     $newCount++
                 }
                 
-                $rowIndex = $dataGridResults.Rows.Add(
-                    $result.Software,
-                    $result.Version,
-                    $result.UpdateType,
-                    $result.Architecture,
-                    $result.CVEs,
-                    $result.Published,
-                    $status
-                )
-
+                $rowIndex = $dataGridResults.Rows.Add($result.Software, $result.Version, $result.UpdateType, $result.Architecture, $result.CVEs, $result.Published, $status)
                 $dataGridResults.Rows[$rowIndex].DefaultCellStyle.BackColor = $rowColor
-
             } catch {
-                $labelStatus.Text = "Error adding row to grid: $($_.Exception.Message)"
+                $labelStatus.Text = "Error adding row: $($_.Exception.Message)"
                 $labelStatus.ForeColor = [System.Drawing.Color]::Red
             }
         }
         
-        try {
-            $results | ConvertTo-Json -Depth 3 | Out-File -FilePath $stateFilePath
-        } catch {
-            $labelStatus.Text = "Warning: Could not save scan history file. $($_.Exception.Message)"
+        Save-JsonSafely -Data $results -Path $stateFilePath | Out-Null
+        
+        $securityCount = 0
+        $totalCVEs = 0
+        $uniqueSoftware = @{}
+        
+        foreach ($result in $results) {
+            if ($result.UpdateType -eq "Security") { $securityCount++ }
+            if (-not [string]::IsNullOrWhiteSpace($result.CVEs)) { $totalCVEs++ }
+            if (-not $uniqueSoftware.ContainsKey($result.Software)) { $uniqueSoftware[$result.Software] = $true }
         }
         
+        $labelStats.Text = "Summary: $securityCount Security Updates | $totalCVEs with CVEs | $($uniqueSoftware.Count) Software Products"
+        
         $statusMsg = "Successfully loaded $($results.Count) updates"
-        if ($newCount -gt 0) {
-            $statusMsg += " ($newCount NEW)"
-        }
-        if ($acknowledgedCount -gt 0) {
-            $statusMsg += " ($acknowledgedCount acknowledged)"
-        }
+        if ($newCount -gt 0) { $statusMsg += " ($newCount NEW)" }
+        if ($acknowledgedCount -gt 0) { $statusMsg += " ($acknowledgedCount acknowledged)" }
         
         $labelStatus.Text = $statusMsg
         $labelStatus.ForeColor = [System.Drawing.Color]::Green
@@ -632,8 +747,10 @@ $buttonCheck.Add_Click({
 
 $buttonClear.Add_Click({
     $dataGridResults.Rows.Clear()
-    $labelStatus.Text = "Results cleared"
+    Clear-PageCache
+    $labelStatus.Text = "Results and cache cleared"
     $labelStatus.ForeColor = [System.Drawing.Color]::Blue
+    $labelStats.Text = ""
     $buttonExport.Enabled = $false
     $buttonAcknowledge.Enabled = $false
     $form.Refresh()
@@ -645,20 +762,10 @@ $buttonAcknowledge.Add_Click({
         return
     }
     
-    # Load existing acknowledged items
     $acknowledgedItems = @()
-    if (Test-Path $acknowledgedFilePath) {
-        try {
-            $acknowledgedItems = Get-Content -Path $acknowledgedFilePath -Raw | ConvertFrom-Json
-            if ($acknowledgedItems -isnot [array]) {
-                $acknowledgedItems = @($acknowledgedItems)
-            }
-        } catch {
-            $acknowledgedItems = @()
-        }
-    }
+    $ackData = Load-JsonSafely -Path $acknowledgedFilePath
+    if ($null -ne $ackData) { $acknowledgedItems = @($ackData) }
     
-    # Build existing keys for quick lookup
     $existingKeys = @{}
     foreach ($item in $acknowledgedItems) {
         $key = "$($item.Software)-$($item.Version)-$($item.Architecture)"
@@ -672,16 +779,13 @@ $buttonAcknowledge.Add_Click({
         $software = $selectedRow.Cells["Software"].Value
         $version = $selectedRow.Cells["Version"].Value
         $architecture = $selectedRow.Cells["Architecture"].Value
-        
         $key = "$software-$version-$architecture"
         
-        # Check if already acknowledged
         if ($existingKeys.ContainsKey($key)) {
             $alreadyAcknowledged++
             continue
         }
         
-        # Add to acknowledged list
         $acknowledgedItems += [PSCustomObject]@{
             Software = $software
             Version = $version
@@ -690,34 +794,25 @@ $buttonAcknowledge.Add_Click({
         }
         
         $existingKeys[$key] = $true
-        
-        # Update the row
         $selectedRow.Cells["Status"].Value = "Acknowledged"
         $selectedRow.DefaultCellStyle.BackColor = [System.Drawing.Color]::LightYellow
-        
         $newlyAcknowledged++
     }
     
-    try {
-        $acknowledgedItems | ConvertTo-Json -Depth 3 | Out-File -FilePath $acknowledgedFilePath
-        
+    if (Save-JsonSafely -Data $acknowledgedItems -Path $acknowledgedFilePath) {
         $statusMsg = ""
-        if ($newlyAcknowledged -gt 0) {
-            $statusMsg = "Acknowledged $newlyAcknowledged item(s)"
-        }
+        if ($newlyAcknowledged -gt 0) { $statusMsg = "Acknowledged $newlyAcknowledged item(s)" }
         if ($alreadyAcknowledged -gt 0) {
             if ($statusMsg) { $statusMsg += "; " }
             $statusMsg += "$alreadyAcknowledged already acknowledged"
         }
-        
         $labelStatus.Text = $statusMsg
         $labelStatus.ForeColor = [System.Drawing.Color]::Green
         $labelAcknowledged.Text = "Acknowledged items: $($acknowledgedItems.Count)"
-    } catch {
-        $labelStatus.Text = "Error acknowledging items: $($_.Exception.Message)"
+    } else {
+        $labelStatus.Text = "Error acknowledging items"
         $labelStatus.ForeColor = [System.Drawing.Color]::Red
     }
-    
     $form.Refresh()
 })
 
@@ -733,12 +828,7 @@ $dataGridResults.Add_SelectionChanged({
 })
 
 $buttonClearHistory.Add_Click({
-    $result = [System.Windows.Forms.MessageBox]::Show(
-        "This will clear both scan history and acknowledged items. Are you sure?",
-        "Confirm Clear All",
-        "YesNo",
-        "Warning"
-    )
+    $result = [System.Windows.Forms.MessageBox]::Show("This will clear both scan history and acknowledged items. Are you sure?", "Confirm Clear All", "YesNo", "Warning")
     
     if ($result -eq "Yes") {
         $clearedItems = @()
@@ -782,7 +872,7 @@ $buttonClearHistory.Add_Click({
 
 $buttonExport.Add_Click({
     $saveFileDialog = New-Object System.Windows.Forms.SaveFileDialog
-    $saveFileDialog.Filter = "CSV Files (*.csv)|*.csv|Text Files (*.txt)|*.txt"
+    $saveFileDialog.Filter = "CSV Files (*.csv)|*.csv"
     $saveFileDialog.Title = "Save Update Report"
     $saveFileDialog.FileName = "PatchMyPC_Updates_$(Get-Date -Format 'yyyyMMdd_HHmmss').csv"
     $saveFileDialog.InitialDirectory = [Environment]::GetFolderPath("Desktop")
@@ -799,6 +889,7 @@ $buttonExport.Add_Click({
                         Architecture = $row.Cells["Architecture"].Value
                         CVEs = $row.Cells["CVEs"].Value
                         Published = $row.Cells["Published"].Value
+                        Status = $row.Cells["Status"].Value
                     }
                 }
             }
@@ -807,21 +898,19 @@ $buttonExport.Add_Click({
             $labelStatus.Text = "Results exported to $($saveFileDialog.FileName)"
             $labelStatus.ForeColor = [System.Drawing.Color]::Green
         } catch {
-            $labelStatus.Text = "Error exporting results: $($_.Exception.Message)"
+            $labelStatus.Text = "Error exporting: $($_.Exception.Message)"
             $labelStatus.ForeColor = [System.Drawing.Color]::Red
-            [System.Windows.Forms.MessageBox]::Show("Could not export the results.`n`nError: $($_.Exception.Message)", "Export Error", "OK", "Error")
         }
         $form.Refresh()
     }
 })
 
 $buttonDebug.Add_Click({
-    $labelStatus.Text = "Debug mode: Checking connectivity to PatchMyPC..."
+    $labelStatus.Text = "Debug mode: Checking connectivity..."
     $form.Refresh()
-    
     try {
         $testRequest = Invoke-WebRequest -Uri "https://patchmypc.com/" -TimeoutSec 10 -UseBasicParsing
-        $labelStatus.Text = "Debug: Successfully connected to PatchMyPC (Status: $($testRequest.StatusCode))"
+        $labelStatus.Text = "Debug: Successfully connected (Status: $($testRequest.StatusCode))"
         $labelStatus.ForeColor = [System.Drawing.Color]::Green
     } catch {
         $labelStatus.Text = "Debug ERROR: $($_.Exception.Message)"
@@ -832,14 +921,9 @@ $buttonDebug.Add_Click({
 
 $buttonRefresh.Add_Click({
     try {
-        $headers = @{
-            'Accept-Language' = 'en-US,en;q=0.9'
-            'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
+        $headers = @{'Accept-Language' = 'en-US,en;q=0.9'; 'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         $testRequest = Invoke-WebRequest -Uri "https://patchmypc.com/category/catalog-updates/" -TimeoutSec 10 -Headers $headers -UseBasicParsing
-        $catalogUrls = [regex]::Matches($testRequest.Content, 'href="(https://patchmypc\.com/catalog-release/\d{4}/\d{2}-\d{2}-\d{2}/)"') | 
-                       ForEach-Object { $_.Groups[1].Value } | 
-                       Select-Object -First 1
+        $catalogUrls = [regex]::Matches($testRequest.Content, 'href="(https://patchmypc\.com/catalog-release/\d{4}/\d{2}-\d{2}-\d{2}/)"') | ForEach-Object { $_.Groups[1].Value } | Select-Object -First 1
         $labelStatus.Text = "Test Feed: Latest catalog found: ${catalogUrls}"
         $labelStatus.ForeColor = [System.Drawing.Color]::Green
     } catch {
@@ -864,64 +948,72 @@ $buttonHelp.Add_Click({
     $helpTextBox.Dock = "Fill"
     $helpTextBox.ScrollBars = "Vertical"
     $helpTextBox.Font = New-Object System.Drawing.Font("Segoe UI", 10)
-    $helpTextBox.Padding = New-Object System.Windows.Forms.Padding(10)
 
-    $helpText = "## PatchMyPC Update Checker - Help`n`n"
-    $helpText += "VERSION: 2.0 Enhanced`n`n"
-    $helpText += "---`n`n"
-    $helpText += "## Features`n`n"
-    $helpText += "- Check Windows software for security updates from PatchMyPC catalog`n"
-    $helpText += "- Filter updates by type (All/Security/Feature)`n"
-    $helpText += "- Track new updates with visual highlighting (RED = New)`n"
-    $helpText += "- Acknowledge items you've handled (YELLOW = Acknowledged)`n"
-    $helpText += "- Export results to CSV format`n"
-    $helpText += "- Load software lists from text files`n`n"
-    $helpText += "---`n`n"
-    $helpText += "## How to Use`n`n"
-    $helpText += "1. Enter software names (one per line) or load from a file`n"
-    $helpText += "2. Set the number of days back to check`n"
-    $helpText += "3. Choose a filter type (All/Security Only/Feature Only)`n"
-    $helpText += "4. Click 'Check Updates' to scan PatchMyPC catalog`n"
-    $helpText += "5. NEW updates will be highlighted in RED`n"
-    $helpText += "6. Select one or MORE items (Ctrl+Click or Shift+Click) and click 'Acknowledge' to mark as handled (turns YELLOW)`n"
-    $helpText += "7. Export results using the 'Export Results' button`n`n"
-    $helpText += "---`n`n"
-    $helpText += "## Understanding Architecture Types`n`n"
-    $helpText += "The architecture types describe the software's design, installer packaging, and installation method.`n`n"
-    $helpText += "Core Concept: x64 Architecture`n`n"
-    $helpText += "x64 refers to 64-bit architecture that powers modern computers. Compared to 32-bit (x86), x64 processors handle more data simultaneously and access significantly more RAM.`n`n"
-    $helpText += "Installer Packages: EXE vs MSI`n`n"
-    $helpText += "EXE-x64: A 64-bit executable file (.exe). Flexible installers common for consumer applications with custom interfaces.`n`n"
-    $helpText += "MSI-x64: A 64-bit Microsoft Installer file (.msi). Uses Windows Installer service for reliable, predictable installations. Ideal for corporate/automated deployments.`n`n"
-    $helpText += "Installation Context: User vs System`n`n"
-    $helpText += "User-x64: Installs ONLY for the current user (e.g., AppData folder). Does NOT require administrator privileges.`n`n"
-    $helpText += "System (x64/EXE-x64/MSI-x64): System-wide installation for all users (e.g., Program Files). Requires administrator privileges.`n`n"
-    $helpText += "---`n`n"
-    $helpText += "## Update Type Classification`n`n"
-    $helpText += "Security: Updates that address CVEs or contain security fixes/patches`n"
-    $helpText += "Feature/Bug Fix: Standard updates that add features or fix non-security bugs`n`n"
-    $helpText += "---`n`n"
-    $helpText += "## File Format`n`n"
-    $helpText += "Software list files should be plain text (.txt) with one software name per line.`n`n"
-    $helpText += "Example:`n"
-    $helpText += "Google Chrome`n"
-    $helpText += "Mozilla Firefox`n"
-    $helpText += "7-Zip`n`n"
-    $helpText += "---`n`n"
-    $helpText += "## Troubleshooting`n`n"
-    $helpText += "- If no updates appear, try increasing the days back value`n"
-    $helpText += "- Use 'Test Feed' to verify PatchMyPC catalog connectivity`n"
-    $helpText += "- Use 'Debug Feed' to test basic internet connection`n"
-    $helpText += "- Clear history to reset the new update highlighting`n`n"
-    $helpText += "---`n`n"
-    $helpText += "Data Source: PatchMyPC Catalog (https://patchmypc.com)`n"
-    $helpText += "Created with PowerShell and Windows Forms"
+    $helpText = "PatchMyPC Update Checker - Help`n`n"
+    $helpText += "VERSION: $script:AppVersion`n`n"
+    $helpText += "FEATURES`n"
+    $helpText += "- Check Windows software for security updates`n"
+    $helpText += "- Track new updates (RED) vs acknowledged (YELLOW)`n"
+    $helpText += "- Filter by Security/Feature updates`n"
+    $helpText += "- Sortable columns, search/filter results`n"
+    $helpText += "- Export to CSV`n`n"
+    $helpText += "HOW TO USE`n"
+    $helpText += "1. Enter software names (one per line) or load from file`n"
+    $helpText += "2. Set days back to check (1-365)`n"
+    $helpText += "3. Click 'Check Updates'`n"
+    $helpText += "4. NEW items appear in RED`n"
+    $helpText += "5. Select items and click 'Acknowledge' to mark as handled (YELLOW)`n"
+    $helpText += "6. Use Filter box to search results`n"
+    $helpText += "7. Double-click any cell to copy value`n`n"
+    $helpText += "IMPROVEMENTS IN v2.1.0`n"
+    $helpText += "- More accurate CVE detection`n"
+    $helpText += "- Better language filtering`n"
+    $helpText += "- Page caching (5 min)`n"
+    $helpText += "- Retry logic for network errors`n"
+    $helpText += "- Statistics summary`n"
+    $helpText += "- Sortable columns`n"
+    $helpText += "- Real-time search`n`n"
+    $helpText += "ARCHITECTURE TYPES`n"
+    $helpText += "x64 = 64-bit`n"
+    $helpText += "EXE-x64 = Executable installer`n"
+    $helpText += "MSI-x64 = Windows Installer package`n"
+    $helpText += "User-x64 = Per-user install (no admin)`n"
+    $helpText += "System = System-wide (admin required)`n`n"
+    $helpText += "Data Source: PatchMyPC (https://patchmypc.com)"
 
     $helpTextBox.Text = $helpText.Replace("`n", [Environment]::NewLine)
-
     $helpForm.Controls.Add($helpTextBox)
     $helpForm.ShowDialog()
 })
 
-# Show the form
+$textboxSearch.Add_TextChanged({
+    $searchText = $textboxSearch.Text
+    if ([string]::IsNullOrWhiteSpace($searchText)) {
+        foreach ($row in $dataGridResults.Rows) { $row.Visible = $true }
+    } else {
+        foreach ($row in $dataGridResults.Rows) {
+            $visible = $false
+            foreach ($cell in $row.Cells) {
+                if ($cell.Value -and $cell.Value.ToString() -like "*$searchText*") {
+                    $visible = $true
+                    break
+                }
+            }
+            $row.Visible = $visible
+        }
+    }
+})
+
+$dataGridResults.Add_CellDoubleClick({
+    param($sender, $e)
+    if ($e.RowIndex -ge 0 -and $e.ColumnIndex -ge 0) {
+        $cellValue = $dataGridResults.Rows[$e.RowIndex].Cells[$e.ColumnIndex].Value
+        if ($cellValue) {
+            [System.Windows.Forms.Clipboard]::SetText($cellValue.ToString())
+            $labelStatus.Text = "Copied to clipboard: $cellValue"
+            $labelStatus.ForeColor = [System.Drawing.Color]::Green
+        }
+    }
+})
+
 $form.ShowDialog()
