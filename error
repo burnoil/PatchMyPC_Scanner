@@ -1,1 +1,43 @@
-
+At C:\Scripts\PMPC\PMPC.ps1:277 char:63
++ ...                           "$([regex]::Escape($term))\s*[-â€“]\s*((?:\ ...
++                                                                 ~
+Unexpected token ']' in expression or statement.
+At C:\Scripts\PMPC\PMPC.ps1:277 char:78
++ ...             "$([regex]::Escape($term))\s*[-â€“]\s*((?:\d+\.)+\d+)\s*\ ...
++                                                                  ~
+You must provide a value expression following the '+' operator.
+At C:\Scripts\PMPC\PMPC.ps1:277 char:78
++ ...          "$([regex]::Escape($term))\s*[-â€“]\s*((?:\d+\.)+\d+)\s*\(([ ...
++                                                               ~~~
+Unexpected token '\d+' in expression or statement.
+At C:\Scripts\PMPC\PMPC.ps1:277 char:78
++ ...             "$([regex]::Escape($term))\s*[-â€“]\s*((?:\d+\.)+\d+)\s*\ ...
++                                                                  ~
+Missing closing ')' in expression.
+At C:\Scripts\PMPC\PMPC.ps1:277 char:82
++ ...     "$([regex]::Escape($term))\s*[-â€“]\s*((?:\d+\.)+\d+)\s*\(([^)]+) ...
++                                                              ~~~~
+Unexpected token '\s*\' in expression or statement.
+At C:\Scripts\PMPC\PMPC.ps1:277 char:89
++ ...  "$([regex]::Escape($term))\s*[-â€“]\s*((?:\d+\.)+\d+)\s*\(([^)]+)\)"
++                                                                  ~
+Missing type name after '['.
+At C:\Scripts\PMPC\PMPC.ps1:277 char:91
++ ...  "$([regex]::Escape($term))\s*[-â€“]\s*((?:\d+\.)+\d+)\s*\(([^)]+)\)"
++                                                                    ~
+Unexpected token ']' in expression or statement.
+At C:\Scripts\PMPC\PMPC.ps1:277 char:91
++ ...  "$([regex]::Escape($term))\s*[-â€“]\s*((?:\d+\.)+\d+)\s*\(([^)]+)\)"
++                                                                    ~
+Missing closing ')' in expression.
+At C:\Scripts\PMPC\PMPC.ps1:274 char:53
++                     foreach ($term in $searchTerms) {
++                                                     ~
+Missing closing '}' in statement block or type definition.
+At C:\Scripts\PMPC\PMPC.ps1:268 char:54
++                 foreach ($software in $SoftwareList) {
++                                                      ~
+Missing closing '}' in statement block or type definition.
+Not all parse errors were reported.  Correct the reported errors and try again.
+    + CategoryInfo          : ParserError: (:) [], ParseException
+    + FullyQualifiedErrorId : UnexpectedToken
