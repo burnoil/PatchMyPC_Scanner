@@ -280,7 +280,6 @@ function Get-PatchMyPCUpdates {
     $cutoffDate = (Get-Date).AddDays(-$DaysBack)
     
     try {
-        # Force the use of modern TLS 1.2 for security
         [System.Net.ServicePointManager]::SecurityProtocol = 'Tls12'
 
         $labelStatus.Text = "Downloading PatchMyPC catalog feed..."
@@ -292,33 +291,26 @@ function Get-PatchMyPCUpdates {
             'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
 
-        # ===== NEW RSS FEED PAGINATION LOGIC =====
         $validCatalogUrls = @()
         $pagesToScan = [Math]::Min(15, [Math]::Ceiling($DaysBack / 30) + 1)
         $stopPaging = $false
 
         for ($page = 1; $page -le $pagesToScan; $page++) {
             if ($stopPaging) { break }
-            
             $feedUri = "https://patchmypc.com/catalog-release/feed/?paged=$page"
-            
             try {
                 $xmlContent = Invoke-WebRequest -Uri $feedUri -Headers $headers -UseBasicParsing
                 [xml]$rss = $xmlContent.Content
-                
-                # Check if there are any articles (items) in the feed page
                 $items = $rss.rss.channel.item
                 if (-not $items) {
                     Write-Warning "No more items found on feed page $page. Stopping."
                     break
                 }
-
                 foreach ($item in $items) {
                     $catalogDate = [datetime]$item.pubDate
                     if ($catalogDate -ge $cutoffDate) {
                         $validCatalogUrls += @{Url = $item.link; Date = $catalogDate}
                     } else {
-                        # Optimization: If we find a post older than our cutoff, we don't need to check older pages
                         $stopPaging = $true
                     }
                 }
@@ -327,7 +319,6 @@ function Get-PatchMyPCUpdates {
                 break
             }
         }
-        # ===== END RSS FEED LOGIC =====
         
         if ($validCatalogUrls.Count -eq 0) { throw "No catalog updates found within the specified date range." }
         
@@ -335,13 +326,11 @@ function Get-PatchMyPCUpdates {
         $progressBar.Maximum = $totalPages
         $processedPages = 0
         
-        # Process the found URLs
         foreach ($catalogInfo in $validCatalogUrls | Sort-Object -Property @{Expression="Date"} -Descending) {
             $processedPages++
             $progressBar.Value = $processedPages
             $labelStatus.Text = "Checking catalog page $processedPages of $totalPages..."
             $form.Refresh()
-            
             $catalogUrl = $catalogInfo.Url
             $catalogDate = $catalogInfo.Date
             
@@ -349,7 +338,6 @@ function Get-PatchMyPCUpdates {
                 $pageContent = Get-CachedPage -Uri $catalogUrl -Headers $headers
                 foreach ($software in $SoftwareList) {
                     if ([string]::IsNullOrWhiteSpace($software)) { continue }
-                    
                     $searchTerms = Get-SoftwareSearchTerms -Software $software
                     foreach ($term in $searchTerms) {
                         $patterns = @(
@@ -376,31 +364,70 @@ function Get-PatchMyPCUpdates {
                         }
                     }
                 }
-            } catch {
-                Write-Warning "Error processing $catalogUrl : $($_.Exception.Message)"
-            }
+            } catch { Write-Warning "Error processing $catalogUrl : $($_.Exception.Message)" }
         }
         
         $labelStatus.Text = "Completed checking $totalPages pages, found $($results.Count) updates."
         $labelStatus.ForeColor = [System.Drawing.Color]::Green
         $labelLastUpdated.Text = "Last checked: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
         
+        # This is the section we are debugging.
         if ($results.Count -gt 0) {
             $mergedResults = @{}
+            
             foreach ($result in $results) {
-                $mergeKey = "$($result.Software)-$($result.Version)-$($result.Architecture)"
-                if (-not $mergedResults.ContainsKey($mergeKey)) {
+                # Normalize architecture for the merge key. This treats 'x64', 'User-x64', 'MSI-x64', etc., as the same group.
+                $normalizedArch = 'other'
+                if ($result.Architecture -like '*x64*') { $normalizedArch = 'x64' }
+                elseif ($result.Architecture -like '*x86*') { $normalizedArch = 'x86' } # For future-proofing
+
+                $mergeKey = "$($result.Software)-$($result.Version)-$normalizedArch"
+                
+                if ($mergedResults.ContainsKey($mergeKey)) {
+                    $existing = $mergedResults[$mergeKey]
+                    
+                    # Merge logic: Security wins, CVEs are combined, earliest date is kept.
+                    $finalUpdateType = if ($existing.UpdateType -eq "Security" -or $result.UpdateType -eq "Security") { "Security" } else { "Feature/Bug Fix" }
+                    $allCVEs = ($existing.CVEs -split ',\s*' + $result.CVEs -split ',\s*') | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique | Sort-Object
+                    $finalPublished = if ([datetime]$result.Published -lt [datetime]$existing.Published) { $result.Published } else { $existing.Published }
+                    
+                    # Combine the displayed architecture strings so no info is lost (e.g., "x64, User-x64").
+                    $finalArchitecture = ($existing.Architecture.Split([string[]]', ', [System.StringSplitOptions]::RemoveEmptyEntries) + $result.Architecture) | Select-Object -Unique | Sort-Object
+                    
+                    $mergedResults[$mergeKey] = [PSCustomObject]@{
+                        Software     = $existing.Software
+                        Version      = $existing.Version
+                        UpdateType   = $finalUpdateType
+                        Architecture = $finalArchitecture -join ", "
+                        CVEs         = $allCVEs -join ", "
+                        Published    = $finalPublished
+                    }
+                } else {
+                    # This is the first time we've seen this version group, so add it as-is.
                     $mergedResults[$mergeKey] = $result
                 }
             }
+            
             $results = @($mergedResults.Values)
             
+            # Apply the final filter after all merging is complete.
             if ($FilterType -eq "Security Only") {
                 $results = @($results | Where-Object { $_.UpdateType -eq "Security" })
             } elseif ($FilterType -eq "Feature/Bug Fix Only") {
                 $results = @($results | Where-Object { $_.UpdateType -eq "Feature/Bug Fix" })
             }
         }
+            
+            # This is the filtering logic
+            if ($FilterType -eq "Security Only") {
+                Write-Host "Applying 'Security Only' filter..."
+                $results = @($results | Where-Object { $_.UpdateType -eq "Security" })
+            } elseif ($FilterType -eq "Feature/Bug Fix Only") {
+                Write-Host "Applying 'Feature/Bug Fix Only' filter..."
+                $results = @($results | Where-Object { $_.UpdateType -eq "Feature/Bug Fix" })
+            }
+            
+                    
     } catch {
         $labelStatus.Text = "Error: $($_.Exception.Message)"
         $labelStatus.ForeColor = [System.Drawing.Color]::Red
