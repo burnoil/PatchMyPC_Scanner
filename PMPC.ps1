@@ -1,10 +1,10 @@
 # Windows Security Update Checker GUI using PatchMyPC Feed
-# Version 2.1.0 - Popular (some) software download links by right-clicking
+# Version 2.1.0 - Enhanced with improved accuracy and reliability
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.IO
-
+[System.Net.ServicePointManager]::SecurityProtocol = 'Tls12'
 # ===== FILE PATHS =====
 $appDataPath = Join-Path -Path $env:APPDATA -ChildPath "PMPC-Scanner"
 if (-not (Test-Path $appDataPath)) {
@@ -147,6 +147,9 @@ function Get-DownloadUrl {
         'Notepad++' = 'https://notepad-plus-plus.org/downloads/'
         'Git for Windows' = 'https://git-scm.com/download/win'
         'Git' = 'https://git-scm.com/download/win'
+		'Slack' = 'https://slack.com/help/articles/212475728-Deploy-Slack-via-Microsoft-Installer#h_01JD57EEAKW7X989K2X6KE75C9'
+		'Putty' = 'https://www.chiark.greenend.org.uk/~sgtatham/putty/latest.html'
+		'Docker' = 'https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe?utm_source=docker&utm_medium=webreferral&utm_campaign=dd-smartbutton&utm_location=module'
     }
     
     if ($downloadUrls.ContainsKey($SoftwareName)) {
@@ -275,45 +278,65 @@ function Get-PatchMyPCUpdates {
     
     $results = @()
     $cutoffDate = (Get-Date).AddDays(-$DaysBack)
-    $processedUpdates = @{}
     
     try {
-        $labelStatus.Text = "Downloading PatchMyPC catalog pages..."
+        # Force the use of modern TLS 1.2 for security
+        [System.Net.ServicePointManager]::SecurityProtocol = 'Tls12'
+
+        $labelStatus.Text = "Downloading PatchMyPC catalog feed..."
         $progressBar.Visible = $true
         $progressBar.Value = 0
         $form.Refresh()
         
         $headers = @{
             'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            'Accept' = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-            'Accept-Language' = 'en-US,en;q=0.9'
         }
-        
-        $mainPageContent = Get-CachedPage -Uri "https://patchmypc.com/category/catalog-updates/" -Headers $headers
-        $catalogUrls = [regex]::Matches($mainPageContent, 'href="(https://patchmypc\.com/catalog-release/\d{4}/\d{2}-\d{2}-\d{2}/)"') | 
-                       ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique | Select-Object -First 15
-        
-        if ($catalogUrls.Count -eq 0) { throw "No catalog URLs found on main page" }
-        
+
+        # ===== NEW RSS FEED PAGINATION LOGIC =====
         $validCatalogUrls = @()
-        foreach ($url in $catalogUrls) {
-            if ($url -match '/(\d{4})/(\d{2})-(\d{2})-(\d{2})/') {
-                try {
-                    $catalogDate = Get-Date -Year ([int]$matches[1]) -Month ([int]$matches[2]) -Day ([int]$matches[3])
-                    if ($catalogDate -ge $cutoffDate) {
-                        $validCatalogUrls += @{Url = $url; Date = $catalogDate}
-                    }
-                } catch {
-                    Write-Warning "Invalid date in URL: $url"
+        $pagesToScan = [Math]::Min(15, [Math]::Ceiling($DaysBack / 30) + 1)
+        $stopPaging = $false
+
+        for ($page = 1; $page -le $pagesToScan; $page++) {
+            if ($stopPaging) { break }
+            
+            $feedUri = "https://patchmypc.com/catalog-release/feed/?paged=$page"
+            
+            try {
+                $xmlContent = Invoke-WebRequest -Uri $feedUri -Headers $headers -UseBasicParsing
+                [xml]$rss = $xmlContent.Content
+                
+                # Check if there are any articles (items) in the feed page
+                $items = $rss.rss.channel.item
+                if (-not $items) {
+                    Write-Warning "No more items found on feed page $page. Stopping."
+                    break
                 }
+
+                foreach ($item in $items) {
+                    $catalogDate = [datetime]$item.pubDate
+                    if ($catalogDate -ge $cutoffDate) {
+                        $validCatalogUrls += @{Url = $item.link; Date = $catalogDate}
+                    } else {
+                        # Optimization: If we find a post older than our cutoff, we don't need to check older pages
+                        $stopPaging = $true
+                    }
+                }
+            } catch {
+                Write-Warning "Could not fetch catalog feed page $page. It might be the last page."
+                break
             }
         }
+        # ===== END RSS FEED LOGIC =====
+        
+        if ($validCatalogUrls.Count -eq 0) { throw "No catalog updates found within the specified date range." }
         
         $totalPages = $validCatalogUrls.Count
         $progressBar.Maximum = $totalPages
         $processedPages = 0
         
-        foreach ($catalogInfo in $validCatalogUrls) {
+        # Process the found URLs
+        foreach ($catalogInfo in $validCatalogUrls | Sort-Object -Property @{Expression="Date"} -Descending) {
             $processedPages++
             $progressBar.Value = $processedPages
             $labelStatus.Text = "Checking catalog page $processedPages of $totalPages..."
@@ -322,133 +345,62 @@ function Get-PatchMyPCUpdates {
             $catalogUrl = $catalogInfo.Url
             $catalogDate = $catalogInfo.Date
             
-            # DEBUG: Show which dates we're scanning
-            Write-Host "DEBUG: Scanning catalog from $($catalogDate.ToString('yyyy-MM-dd'))"
-            
             try {
                 $pageContent = Get-CachedPage -Uri $catalogUrl -Headers $headers
-                
                 foreach ($software in $SoftwareList) {
                     if ([string]::IsNullOrWhiteSpace($software)) { continue }
                     
                     $searchTerms = Get-SoftwareSearchTerms -Software $software
-                    $normalizedName = Get-NormalizedSoftwareName -Name $software
-                    
                     foreach ($term in $searchTerms) {
                         $patterns = @(
                             "$([regex]::Escape($term))\s+((?:\d+\.)+\d+)\s*\(([^)]+)\)",
                             "$([regex]::Escape($term))\s*-\s*((?:\d+\.)+\d+)\s*\(([^)]+)\)"
                         )
-                        
                         foreach ($pattern in $patterns) {
-                            $matches = [regex]::Matches($pageContent, $pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-                            
+                            $matches = [regex]::Matches($pageContent, $pattern, 'IgnoreCase')
                             foreach ($match in $matches) {
                                 $version = $match.Groups[1].Value.Trim()
                                 $architecture = $match.Groups[2].Value.Trim()
                                 
-                                if ($version -notmatch '^(\d+\.)+\d+$') { continue }
-                                if (-not (Test-ShouldIncludeArchitecture -Architecture $architecture)) { continue }
+                                if ($version -notmatch '^(\d+\.)+\d+$' -or -not (Test-ShouldIncludeArchitecture -Architecture $architecture)) { continue }
                                 
                                 $updateDetails = Extract-UpdateDetails -PageContent $pageContent -MatchIndex $match.Index
                                 $updateType = if ($updateDetails.IsSecurityUpdate) { "Security" } else { "Feature/Bug Fix" }
                                 
-                                # DEBUG: Log what we found for Visual Studio Code
-                                if ($software -like "*Visual Studio Code*" -and $version -eq "1.104.1") {
-                                    Write-Host "DEBUG: Found VS Code 1.104.1 on $($catalogDate.ToString('yyyy-MM-dd'))"
-                                    Write-Host "  Architecture: $architecture"
-                                    Write-Host "  UpdateType: $updateType"
-                                    Write-Host "  CVEs: $($updateDetails.CVEs -join ', ')"
-                                    Write-Host "  IsSecurityUpdate: $($updateDetails.IsSecurityUpdate)"
-                                }
-                                
-                                
-                                
                                 $results += [PSCustomObject]@{
-                                    Software = $software
-                                    Version = $version
-                                    UpdateType = $updateType
-                                    Architecture = $architecture
-                                    CVEs = ($updateDetails.CVEs -join ", ")
+                                    Software = $software; Version = $version; UpdateType = $updateType
+                                    Architecture = $architecture; CVEs = ($updateDetails.CVEs -join ", ")
                                     Published = $catalogDate.ToString("yyyy-MM-dd")
                                 }
                             }
                         }
                     }
                 }
-                
-                Start-Sleep -Milliseconds 250
             } catch {
                 Write-Warning "Error processing $catalogUrl : $($_.Exception.Message)"
-                $labelStatus.Text = "Warning: Error on page $processedPages, continuing..."
-                $labelStatus.ForeColor = [System.Drawing.Color]::Orange
-                $form.Refresh()
-                Start-Sleep -Milliseconds 500
             }
         }
         
-        $labelStatus.Text = "Completed checking $totalPages pages, found $($results.Count) updates"
+        $labelStatus.Text = "Completed checking $totalPages pages, found $($results.Count) updates."
         $labelStatus.ForeColor = [System.Drawing.Color]::Green
         $labelLastUpdated.Text = "Last checked: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
         
-        # Merge duplicate entries with same software, version, and architecture
         if ($results.Count -gt 0) {
             $mergedResults = @{}
-            
             foreach ($result in $results) {
                 $mergeKey = "$($result.Software)-$($result.Version)-$($result.Architecture)"
-                
-                if ($mergedResults.ContainsKey($mergeKey)) {
-                    # Entry exists, merge attributes
-                    $existing = $mergedResults[$mergeKey]
-                    
-                    # Determine final UpdateType - Security wins
-                    $finalUpdateType = $existing.UpdateType
-                    if ($result.UpdateType -eq "Security") {
-                        $finalUpdateType = "Security"
-                    }
-                    if ($existing.UpdateType -eq "Security") {
-                        $finalUpdateType = "Security"
-                    }
-                    
-                    # Combine CVEs
-                    $existingCVEs = if ($existing.CVEs) { $existing.CVEs -split ',\s*' } else { @() }
-                    $newCVEs = if ($result.CVEs) { $result.CVEs -split ',\s*' } else { @() }
-                    $allCVEs = ($existingCVEs + $newCVEs) | Where-Object { $_ -and $_.Trim() } | Select-Object -Unique | Sort-Object
-                    $finalCVEs = if ($allCVEs.Count -gt 0) { ($allCVEs -join ", ") } else { "" }
-                    
-                    # Keep earliest publish date
-                    $finalPublished = $existing.Published
-                    if ($result.Published -lt $existing.Published) {
-                        $finalPublished = $result.Published
-                    }
-                    
-                    # Create new merged object
-                    $mergedResults[$mergeKey] = [PSCustomObject]@{
-                        Software = $existing.Software
-                        Version = $existing.Version
-                        UpdateType = $finalUpdateType
-                        Architecture = $existing.Architecture
-                        CVEs = $finalCVEs
-                        Published = $finalPublished
-                    }
-                } else {
-                    # New entry - add as-is
+                if (-not $mergedResults.ContainsKey($mergeKey)) {
                     $mergedResults[$mergeKey] = $result
                 }
             }
-            
-            # Convert back to array
             $results = @($mergedResults.Values)
             
-            # NOW apply the filter after merging
             if ($FilterType -eq "Security Only") {
                 $results = @($results | Where-Object { $_.UpdateType -eq "Security" })
             } elseif ($FilterType -eq "Feature/Bug Fix Only") {
                 $results = @($results | Where-Object { $_.UpdateType -eq "Feature/Bug Fix" })
             }
         }
-        
     } catch {
         $labelStatus.Text = "Error: $($_.Exception.Message)"
         $labelStatus.ForeColor = [System.Drawing.Color]::Red
@@ -739,6 +691,9 @@ $menuItemDownload.Add_Click({
         $downloadUrl = Get-DownloadUrl -SoftwareName $software
         if ($downloadUrl) {
             Start-Process $downloadUrl
+            # ADDED: Provide immediate feedback to the user in the status bar.
+            $labelStatus.Text = "Attempting to open download page for '$software'..."
+            $labelStatus.ForeColor = [System.Drawing.Color]::Blue
         } else {
             [System.Windows.Forms.MessageBox]::Show("No download URL available for $software", "Download Not Available", "OK", "Information")
         }
