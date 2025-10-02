@@ -1,5 +1,5 @@
 # Windows Security Update Checker GUI using PatchMyPC Feed
-# Version 2.1.0 - Enhanced with improved accuracy and reliability
+# Version 2.1.0 - Popular (some) software download links by right-clicking
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -132,6 +132,27 @@ function Get-NormalizedSoftwareName {
     
     if ($normalizations.ContainsKey($Name)) { return $normalizations[$Name] }
     return $Name
+}
+
+function Get-DownloadUrl {
+    param([string]$SoftwareName)
+    
+    $downloadUrls = @{
+        'Google Chrome' = 'https://dl.google.com/dl/chrome/install/googlechromestandaloneenterprise64.msi'
+        'Mozilla Firefox ESR' = 'https://www.mozilla.org/en-US/firefox/all/desktop-esr/win64-msi/en-US/'
+        'Mozilla Firefox' = 'https://www.mozilla.org/firefox/download/'
+        'Visual Studio Code' = 'https://code.visualstudio.com/sha/download?build=stable&os=win32-x64'
+        'Microsoft Visual Studio Code' = 'https://code.visualstudio.com/sha/download?build=stable&os=win32-x64'
+        '7-Zip' = 'https://www.7-zip.org/download.html'
+        'Notepad++' = 'https://notepad-plus-plus.org/downloads/'
+        'Git for Windows' = 'https://git-scm.com/download/win'
+        'Git' = 'https://git-scm.com/download/win'
+    }
+    
+    if ($downloadUrls.ContainsKey($SoftwareName)) {
+        return $downloadUrls[$SoftwareName]
+    }
+    return $null
 }
 
 function Get-SoftwareSearchTerms {
@@ -705,6 +726,24 @@ $colStatus.SortMode = "Automatic"
 $dataGridResults.Columns.Add($colStatus)
 
 $form.Controls.Add($dataGridResults)
+
+$contextMenu = New-Object System.Windows.Forms.ContextMenuStrip
+$menuItemDownload = New-Object System.Windows.Forms.ToolStripMenuItem
+$menuItemDownload.Text = "Open Download Page"
+$contextMenu.Items.Add($menuItemDownload)
+$dataGridResults.ContextMenuStrip = $contextMenu
+
+$menuItemDownload.Add_Click({
+    if ($dataGridResults.SelectedRows.Count -gt 0) {
+        $software = $dataGridResults.SelectedRows[0].Cells["Software"].Value
+        $downloadUrl = Get-DownloadUrl -SoftwareName $software
+        if ($downloadUrl) {
+            Start-Process $downloadUrl
+        } else {
+            [System.Windows.Forms.MessageBox]::Show("No download URL available for $software", "Download Not Available", "OK", "Information")
+        }
+    }
+})
 
 $labelLastUpdated = New-Object System.Windows.Forms.Label
 $labelLastUpdated.Location = New-Object System.Drawing.Point(10, 715)
