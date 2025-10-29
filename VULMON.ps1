@@ -1,4 +1,4 @@
-﻿# Security Update Checker using Official APIs
+# Vulnerability Monitor using Official APIs
 # Version 3.3 - Optional CIRCL Enrichment & UI Fixes
 # This script directly queries authoritative data sources instead of web scraping
 
