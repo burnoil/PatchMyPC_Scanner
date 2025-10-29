@@ -1,1 +1,43 @@
-
+At C:\Scripts\VULMON\VULMON.ps1:526 char:59
++ $checkboxEnrichData.Text = "Enrich CVEs with CIRCL (Slower, but more  ...
++                                                           ~
+Missing argument in parameter list.
+At C:\Scripts\VULMON\VULMON.ps1:577 char:54
++ $linkLabelGetApiKey.Text = "Get a free NVD API key (5-min signup, inc ...
++                                                      ~~~~
+Unexpected token '-min' in expression or statement.
+At C:\Scripts\VULMON\VULMON.ps1:577 char:59
++ ... nkLabelGetApiKey.Text = "Get a free NVD API key (5-min signup, increa ...
++                                                            ~~~~~~
+Unexpected token 'signup' in expression or statement.
+At C:\Scripts\VULMON\VULMON.ps1:577 char:58
++ $linkLabelGetApiKey.Text = "Get a free NVD API key (5-min signup, inc ...
++                                                          ~
+Missing closing ')' in expression.
+At C:\Scripts\VULMON\VULMON.ps1:316 char:9
++     try {
++         ~
+Missing closing '}' in statement block or type definition.
+At C:\Scripts\VULMON\VULMON.ps1:577 char:97
++ ... et a free NVD API key (5-min signup, increases rate limit to 50/30s)"
++                                                                        ~
+The Try statement is missing its Catch or Finally block.
+At C:\Scripts\VULMON\VULMON.ps1:298 char:29
++ function Search-MSRCUpdates {
++                             ~
+Missing closing '}' in statement block or type definition.
+At C:\Scripts\VULMON\VULMON.ps1:577 char:97
++ ... et a free NVD API key (5-min signup, increases rate limit to 50/30s)"
++                                                                        ~
+Unexpected token ')' in expression or statement.
+At C:\Scripts\VULMON\VULMON.ps1:585 char:26
++ $groupBoxSources.Text = "Data Sources (Official APIs - No Web Scrapin ...
++                          ~~~~
+Unexpected token 'Data' in expression or statement.
+At C:\Scripts\VULMON\VULMON.ps1:585 char:38
++ $groupBoxSources.Text = "Data Sources (Official APIs - No Web Scrapin ...
++                                      ~
+The Data section is missing its statement block.
+Not all parse errors were reported.  Correct the reported errors and try again.
+    + CategoryInfo          : ParserError: (:) [], ParseException
+    + FullyQualifiedErrorId : MissingArgument
