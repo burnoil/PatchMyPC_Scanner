@@ -1,80 +1,114 @@
-## PatchMyPC Update Checker - Help
+##VULNERABILITY MONITOR (VULMON) v3.3##
+API-Based Vulnerability Monitoring
 
-VERSION: 2.0 Enhanced
+══════════════════════════════════════════════════════════════════
 
----
+DATA SOURCES & STATUS INDICATORS
 
-## Features
+The tool queries three official APIs and shows real-time status:
 
-- Check Windows software for security updates from PatchMyPC catalog
-- Filter updates by type (All/Security/Feature)
-- Track new updates with visual highlighting (RED = New)
-- Acknowledge items you've handled (YELLOW = Acknowledged)
-- Export results to CSV format
-- Load software lists from text files
+✓ Active      - API queried successfully, data retrieved
+⚠ Limited     - Partial data or degraded service
+✗ Error       - Query failed (check connectivity/rate limits)
+Not Queried   - API not yet used in this session
 
----
+PRIMARY SOURCE:
+• NIST NVD (National Vulnerability Database)
+  - Official US Government CVE database
+  - Most comprehensive vulnerability data
+  - All CVEs from all vendors
+  - Website: https://nvd.nist.gov/
+  
+ENRICHMENT SOURCE:
+• CIRCL CVE Search
+  - Fast CVE detail lookup
+  - Supplementary vulnerability information
+  - Website: https://cve.circl.lu/
+  - NOTE: Use the checkbox to enable this source. It is
+    slower as it queries every CVE found.
 
-## How to Use
+OPTIONAL SOURCE:
+• Microsoft MSRC (Security Response Center)
+  - Official Microsoft security bulletins
+  - Enhanced Windows/Office monitoring
+  - Requires PowerShell module installation
+  - Website: https://msrc.microsoft.com/
 
-1. Enter software names (one per line) or load from a file
-2. Set the number of days back to check
-3. Choose a filter type (All/Security Only/Feature Only)
-4. Click 'Check Updates' to scan PatchMyPC catalog
-5. NEW updates will be highlighted in RED
-6. Select one or MORE items (Ctrl+Click or Shift+Click) and click 'Acknowledge' to mark as handled (turns YELLOW)
-7. Export results using the 'Export Results' button
+══════════════════════════════════════════════════════════════════
 
----
+SOURCE COLUMN IN RESULTS
 
-## Understanding Architecture Types
+Each vulnerability shows which API provided the data:
+• "NIST NVD" - Direct from National Vulnerability Database
+• "MS MSRC" - From Microsoft Security Response Center
 
-The architecture types describe the software's design, installer packaging, and installation method.
+This transparency lets you verify data provenance.
 
-Core Concept: x64 Architecture
+══════════════════════════════════════════════════════════════════
 
-x64 refers to 64-bit architecture that powers modern computers. Compared to 32-bit (x86), x64 processors handle more data simultaneously and access significantly more RAM.
+QUICK START
 
-Installer Packages: EXE vs MSI
+1. Enter products to monitor (one per line)
+2. Set the "Start Date" and "End Date"
+3. Choose your filter method:
+   • (Default) Leave "Critical" and "High" checked
+   • -OR- Check "Show CISA Known Exploited (KEV) Only"
+     for the most urgent, in-the-wild threats.
+4. (Optional) Check "Enrich CVEs with CIRCL" for more
+   detailed data (this is slower).
+5. Click "Check Updates"
+6. Watch source status indicators update in real-time
+7. Review color-coded results:
+   • RED = New critical/high vulnerabilities
+   • PINK = Existing critical vulnerabilities
+   • YELLOW = High severity
+   • WHITE = Medium/low severity
 
-EXE-x64: A 64-bit executable file (.exe). Flexible installers common for consumer applications with custom interfaces.
+══════════════════════════════════════════════════════════════════
 
-MSI-x64: A 64-bit Microsoft Installer file (.msi). Uses Windows Installer service for reliable, predictable installations. Ideal for corporate/automated deployments.
+SEARCH FILTERS EXPLAINED
 
-Installation Context: User vs System
+• Critical / High: Filters by theoretical severity
+  (CVSS score). This shows what *could* be bad.
 
-User-x64: Installs ONLY for the current user (e.g., AppData folder). Does NOT require administrator privileges.
+• Show CISA KEV Only: Filters by real-world threat.
+  Shows only vulnerabilities that CISA has confirmed
+  are actively being used in attacks. This is the
+  most urgent filter. When checked, it overrides
+  the Critical/High filter and skips the MSRC query
+  (as MSRC does not support KEV filtering).
 
-System (x64/EXE-x64/MSI-x64): System-wide installation for all users (e.g., Program Files). Requires administrator privileges.
+══════════════════════════════════════════════════════════════════
 
----
+NVD API KEY (OPTIONAL BUT RECOMMENDED)
 
-## Update Type Classification
+Why get an API key?
+• Increases rate limit from 5 to 50 requests per 30 seconds
+• Completely free (5-minute signup)
+• Faster searches when monitoring many products
 
-Security: Updates that address CVEs or contain security fixes/patches
-Feature/Bug Fix: Standard updates that add features or fix non-security bugs
+How to get:
+1. Click "Get a free NVD API key" link
+2. Fill out simple form (name, email, org)
+3. Receive key via email
+4. Paste into "NVD API Key" field
+5. Click "Save Key"
 
----
+══════════════════════════════════════════════════════════════════
 
-## File Format
+VERSION HISTORY
 
-Software list files should be plain text (.txt) with one software name per line.
-
-Example:
-Google Chrome
-Mozilla Firefox
-7-Zip
-
----
-
-## Troubleshooting
-
-- If no updates appear, try increasing the days back value
-- Use 'Test Feed' to verify PatchMyPC catalog connectivity
-- Use 'Debug Feed' to test basic internet connection
-- Clear history to reset the new update highlighting
-
----
-
-Data Source: PatchMyPC Catalog (https://patchmypc.com)
-Created with PowerShell and Windows Forms
+v3.4 (This version)
+     - Added CISA KEV (Known Exploited) filter
+     - Added "Start Date" / "End Date" range
+     - Added Critical/High severity filters
+     - Fixed MSRC module parameter errors
+     - Fixed MSRC module install path (OneDrive)
+v3.3 - Added optional CIRCL enrichment checkbox
+     - Fixed UI layout for Data Sources box
+     - Fixed product list loading line-ending bug
+v3.2 - Enhanced API source display
+     - Real-time status indicators
+     - Source transparency in UI and results
+v3.1 - Fixed UI layout, added import/export
+v3.0 - Complete rewrite using official APIs
