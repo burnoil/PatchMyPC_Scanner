@@ -1,4 +1,4 @@
-##VULNERABILITY MONITOR (VULMON) v3.3##
+VULNERABILITY MONITOR (VULMON) v3.3
 API-Based Vulnerability Monitoring
 
 ══════════════════════════════════════════════════════════════════
