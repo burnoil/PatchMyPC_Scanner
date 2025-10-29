@@ -1,3 +1,5 @@
+## NOTE: Due to encoding issues bewtween Git and the web browser, it is best to download as a ZIP file.
+
 VULNERABILITY MONITOR (VULMON) v3.3
 API-Based Vulnerability Monitoring
 
