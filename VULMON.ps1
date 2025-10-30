@@ -1,4 +1,4 @@
-﻿# Security Update Checker using Official APIs
+# Security Update Checker using Official APIs
 # Version 3.3 - Optional CIRCL Enrichment & UI Fixes
 # This script directly queries authoritative data sources instead of web scraping
 
@@ -96,7 +96,7 @@ function Invoke-NVDSearch {
         [DateTime]$StartDate,
         [DateTime]$EndDate,
         [int]$ResultsPerPage = 20,
-        [string[]]$Severities = @("CRITICAL", "HIGH"),
+        [string[]]$Severities = @(),
 		[bool]$HasKev = $false
     )
     
@@ -123,7 +123,7 @@ function Invoke-NVDSearch {
         $queryString = ($params.GetEnumerator() | ForEach-Object { "$($_.Key)=$([System.Web.HttpUtility]::UrlEncode($_.Value))" }) -join '&'
         
         # Build the severity query string, but only if KEV filter is NOT active
-        if ($Severities -and $Severities.Count -gt 0 -and (-not $HasKev)) {
+        if ($Severities.Count -gt 0 -and (-not $HasKev)) {
             $severityQueryString = ($Severities | ForEach-Object { "cvssV3Severity=$([System.Web.HttpUtility]::UrlEncode($_))" }) -join '&'
             $queryString = "$queryString&$severityQueryString"
         }
@@ -206,7 +206,7 @@ function Search-VulnerabilitiesByProduct {
         [DateTime]$StartDate,
         [DateTime]$EndDate,
         [bool]$EnrichData = $false,
-        [string[]]$Severities = @("CRITICAL", "HIGH"),
+        [string[]]$Severities = @(),
 		[bool]$HasKev = $false
     )
     
@@ -299,7 +299,7 @@ function Search-MSRCUpdates {
     param(
         [string[]]$ProductNames,
         [DateTime]$StartDate,
-        [string[]]$Severities = @("CRITICAL", "HIGH"),
+        [string[]]$Severities = @(),
 		[bool]$HasKev = $false
     )
 if ($HasKev) {
@@ -342,7 +342,12 @@ Import-Module -Name $moduleManifest -Force
         # Get all MSRC updates since the start date
         # Get ALL updates (bypassing the failing parameter) and filter in-memory.
 $allUpdates = Get-MsrcSecurityUpdate -ErrorAction Stop
-$filteredUpdates = $allUpdates | Where-Object { $_.InitialReleaseDate -ge $startDate } | Where-Object { $Severities -contains $_.Severity.ToUpper() }
+$filteredUpdates = $allUpdates | Where-Object { $_.InitialReleaseDate -ge $StartDate }
+
+# Only filter by severity if severities were actually selected
+if ($Severities.Count -gt 0) {
+    $filteredUpdates = $filteredUpdates | Where-Object { $Severities -contains $_.Severity.ToUpper() }
+}
         
         $results = @()
         
@@ -760,8 +765,6 @@ $checkboxCISA.Add_Click({
     if ($checkboxCISA.Checked) {
         $checkboxCritical.Enabled = $false
         $checkboxHigh.Enabled = $false
-        $checkboxCritical.Checked = $true
-        $checkboxHigh.Checked = $true
     } else {
         $checkboxCritical.Enabled = $true
         $checkboxHigh.Enabled = $true
@@ -791,22 +794,6 @@ $buttonLoadList.Add_Click({
     }
 })
 
-$selectedSeverities = @()
-        if ($checkboxCritical.Checked) { $selectedSeverities += "CRITICAL" }
-        if ($checkboxHigh.Checked) { $selectedSeverities += "HIGH" }
-        
-        if ($selectedSeverities.Count -eq 0) {
-            [System.Windows.Forms.MessageBox]::Show("Please select at least one severity (Critical or High).", "No Severity Selected", "OK", "Warning")
-            return
-        }
-
-$startDate = $datePickerStart.Value.Date # Get the date part (midnight)
-        $endDate = $datePickerEnd.Value.Date.AddDays(1).AddTicks(-1) # Get the end of the selected day
-
-        if ($startDate -gt $endDate) {
-            [System.Windows.Forms.MessageBox]::Show("The Start Date cannot be after the End Date.", "Invalid Date Range", "OK", "Warning")
-            return
-        }
 
 $buttonSaveList.Add_Click({
     $saveFileDialog = New-Object System.Windows.Forms.SaveFileDialog
@@ -928,6 +915,20 @@ $buttonCheck.Add_Click({
             [System.Windows.Forms.MessageBox]::Show("Please enter at least one product name.", "No Products", "OK", "Warning")
             $labelStatus.Text = "Ready"
             $labelStatus.ForeColor = [System.Drawing.Color]::Blue
+            return
+        }
+        
+        # Read current checkbox states for severity filtering
+        $selectedSeverities = @()
+        if ($checkboxCritical.Checked) { $selectedSeverities += "CRITICAL" }
+        if ($checkboxHigh.Checked) { $selectedSeverities += "HIGH" }
+        
+        # Get date range
+        $startDate = $datePickerStart.Value.Date
+        $endDate = $datePickerEnd.Value.Date.AddDays(1).AddTicks(-1)
+        
+        if ($startDate -gt $endDate) {
+            [System.Windows.Forms.MessageBox]::Show("The Start Date cannot be after the End Date.", "Invalid Date Range", "OK", "Warning")
             return
         }
         
